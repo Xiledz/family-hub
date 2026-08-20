@@ -235,3 +235,105 @@ button{cursor:pointer}
   #app{align-items:center}
   .qa,.hdr,.bento,.banner{margin-left:auto;margin-right:auto}
 }
+
+/* ============================================================================
+   CALENDAR VIEWS — day / week / month
+   Mobile rule: a 7-column grid with event text is unreadable at 390px, so the
+   month view degrades to dots + a day detail panel, and the week view becomes
+   a stack of days rather than columns.
+   ========================================================================== */
+.viewbar{display:flex;gap:5px;background:var(--soft);padding:4px;border-radius:11px;margin:0 16px}
+.viewbar button{flex:1;border:0;background:transparent;color:var(--ink2);font-weight:600;
+  font-size:13px;padding:9px 6px;border-radius:8px}
+.viewbar button[aria-pressed="true"]{background:var(--card);color:var(--ink);
+  box-shadow:0 1px 3px rgba(0,0,0,.13)}
+.cal-nav{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+.cal-nav .lbl{font-size:19px;font-weight:700;letter-spacing:-.02em;flex:1}
+.cal-nav button{width:36px;height:36px;border-radius:10px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);font-size:15px;display:grid;place-items:center}
+.cal-nav .today{width:auto;padding:0 14px;font-size:13px;font-weight:600}
+
+/* ---- month ---- */
+.mgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;padding:0 16px 16px}
+.mdow{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);
+  font-weight:700;text-align:center;padding-bottom:4px}
+.mcell{aspect-ratio:1;border:0;background:var(--card);border-radius:11px;padding:5px 4px 4px;
+  display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.mcell.out{background:transparent}
+.mcell.out .mnum{color:var(--ink3);opacity:.45}
+.mcell.sel{background:var(--accent)}
+.mcell.sel .mnum{color:var(--bg)}
+.mcell.today .mnum{color:#c0392b}
+.mcell.today.sel .mnum{color:var(--bg)}
+.mnum{font-size:13.5px;font-weight:600;line-height:1.1}
+.mdots{display:flex;gap:2.5px;flex-wrap:wrap;justify-content:center;max-width:100%}
+.mdots span{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.mev{display:none}
+.daypanel{padding:0 16px 20px}
+.daypanel h3{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);
+  font-weight:700;margin:0 0 12px}
+
+/* ---- week (mobile = stacked days) ---- */
+.wstack{padding:0 16px 20px}
+.wday{margin-bottom:16px}
+.wday .wh{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+.wday .wh b{font-size:15px;font-weight:700}
+.wday .wh span{font-size:12px;color:var(--ink3);font-weight:600}
+.wday.is-today .wh b{color:#c0392b}
+.wday .none{font-size:13px;color:var(--ink3);padding:2px 0 6px}
+.wgrid{display:none}
+
+/* ---- day (hour timeline) ---- */
+.tline{padding:0 16px 24px}
+.hr{display:grid;grid-template-columns:62px 1fr;gap:10px;min-height:52px;
+  border-top:1px solid var(--line);padding-top:6px}
+.hr:first-child{border-top:0}
+.hr .hl{font-size:11px;font-weight:700;color:var(--ink3);padding-top:2px}
+.hr .hb{display:flex;flex-direction:column;gap:6px;padding-bottom:8px}
+.hr.now{position:relative}
+.hr.now::before{content:"";position:absolute;left:56px;right:0;top:0;height:2px;background:#c0392b}
+
+/* shared event pill used by every view */
+.pill{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:11px;
+  background:var(--soft);border-left:3px solid var(--c);width:100%;text-align:left;
+  border-top:0;border-right:0;border-bottom:0}
+.pill .pt{font-size:11.5px;font-weight:700;color:var(--ink2);min-width:56px;flex-shrink:0;padding-top:1px}
+.pill .pb{flex:1;min-width:0}
+.pill .pn{display:block;font-size:14px;font-weight:600;line-height:1.3}
+.pill .pw{display:block;font-size:11.5px;color:var(--ink3);margin-top:2px;font-weight:500}
+.pill .rep{display:inline-block;font-size:10px;font-weight:700;color:var(--ink3);
+  background:var(--card);border-radius:5px;padding:1px 5px;margin-left:6px;vertical-align:1px}
+
+@media(min-width:760px){
+  .viewbar{max-width:340px;margin:0 26px}
+  .cal-nav{padding:16px 26px 12px;max-width:1240px;margin:0 auto;width:100%}
+  .mgrid{gap:6px;padding:0 26px 22px;max-width:1240px;margin:0 auto;width:100%}
+  .mcell{aspect-ratio:auto;min-height:112px;align-items:stretch;padding:7px 8px 8px}
+  .mnum{text-align:left}
+  .mdots{display:none}
+  .mev{display:flex;flex-direction:column;gap:3px;overflow:hidden}
+  .mev .me{font-size:11px;line-height:1.25;padding:3px 6px;border-radius:5px;background:var(--soft);
+    border-left:3px solid var(--c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    text-align:left;color:var(--ink)}
+  .mev .more{font-size:10px;color:var(--ink3);font-weight:600;padding-left:3px}
+  .daypanel{max-width:1240px;margin:0 auto;padding:0 26px 24px}
+  .wstack{display:none}
+  .wgrid{display:grid;grid-template-columns:62px repeat(7,1fr);gap:0;padding:0 26px 24px;
+    max-width:1240px;margin:0 auto;width:100%}
+  .wgrid .wcol-h{text-align:center;padding:8px 4px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:var(--bg);z-index:2}
+  .wgrid .wcol-h i{display:block;font-style:normal;font-size:10px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink3);font-weight:700}
+  .wgrid .wcol-h b{display:block;font-size:17px;font-weight:700;margin-top:2px}
+  .wgrid .wcol-h.is-today b{color:#c0392b}
+  .wgrid .hlab{font-size:11px;font-weight:700;color:var(--ink3);text-align:right;
+    padding:6px 10px 0 0;border-top:1px solid var(--line);min-height:54px}
+  .wgrid .cellw{border-top:1px solid var(--line);border-left:1px solid var(--line);
+    min-height:54px;padding:3px;display:flex;flex-direction:column;gap:3px}
+  .wgrid .cellw .we{font-size:11px;line-height:1.25;padding:4px 6px;border-radius:6px;
+    background:var(--soft);border-left:3px solid var(--c);text-align:left;color:var(--ink);
+    overflow:hidden;text-overflow:ellipsis}
+  .tline{max-width:900px;margin:0 auto;padding:0 26px 28px}
+}
+.calview{display:block;padding:0}
+@media(min-width:760px){.calview{width:100%}}

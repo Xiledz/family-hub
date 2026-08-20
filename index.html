@@ -85,6 +85,13 @@ try{var t=localStorage.getItem('fh.theme');if(t&&t!=='auto')document.documentEle
     <div id="qa-prev"></div>
   </div>
 
+  <div class="viewbar hide" id="viewbar" role="group" aria-label="Calendar view">
+    <button data-v="today"  aria-pressed="true">Today</button>
+    <button data-v="day"    aria-pressed="false">Day</button>
+    <button data-v="week"   aria-pressed="false">Week</button>
+    <button data-v="month"  aria-pressed="false">Month</button>
+  </div>
+
   <main class="bento" id="bento"></main>
 </div>
 
@@ -114,6 +121,18 @@ try{var t=localStorage.getItem('fh.theme');if(t&&t!=='auto')document.documentEle
           <label for="ev-time">Time</label>
           <input id="ev-time" type="time">
         </div>
+      </div>
+      <div class="f">
+        <label>Repeats</label>
+        <div class="chips" id="ev-repeat"></div>
+      </div>
+      <div class="f hide" id="ev-days-row">
+        <label>On these days</label>
+        <div class="chips" id="ev-days"></div>
+      </div>
+      <div class="f hide" id="ev-until-row">
+        <label for="ev-until">Repeat until <span style="text-transform:none;letter-spacing:0;font-weight:500">(leave blank for no end)</span></label>
+        <input id="ev-until" type="date">
       </div>
       <div class="f">
         <label>Remind me</label>
@@ -163,6 +182,20 @@ try{var t=localStorage.getItem('fh.theme');if(t&&t!=='auto')document.documentEle
 
     <button class="plain" type="button" id="set-switch">Switch to a different person</button>
     <button class="save" type="button" id="set-done">Done</button>
+  </div>
+</div>
+
+<!-- ============ recurring-edit scope prompt ============ -->
+<div class="sheet" id="scope">
+  <div class="scrim" data-close-scope></div>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="scope-title">
+    <div class="grab"></div>
+    <h2 id="scope-title">This is a repeating event</h2>
+    <p id="scope-sub" style="margin:-8px 0 18px;color:var(--ink2);font-size:14px;line-height:1.5"></p>
+    <button class="plain" type="button" data-scope="one">Just this one</button>
+    <button class="plain" type="button" data-scope="future">This and all future</button>
+    <button class="plain" type="button" data-scope="all">Every one in the series</button>
+    <button class="save" type="button" data-close-scope style="margin-top:14px">Cancel</button>
   </div>
 </div>
 

@@ -1,7 +1,7 @@
 /* Family Hub service worker.
    Two jobs: keep the app shell available offline, and receive push. */
 const CACHE = 'familyhub-v1';
-const SHELL = ['./','./index.html','./styles.css','./app.js','./parse.js','./config.js','./manifest.webmanifest'];
+const SHELL = ['./','./index.html','./styles.css','./app.js','./parse.js','./recur.js','./config.js','./manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
