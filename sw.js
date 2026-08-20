@@ -27,8 +27,8 @@ self.addEventListener('push', e => {
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'Family Hub', body: e.data && e.data.text() }; }
   e.waitUntil(self.registration.showNotification(d.title || 'Family Hub', {
     body: d.body || '',
-    icon: './icons/icon-192.png',
-    badge: './icons/badge.png',
+    icon: './icon-192.png',
+    badge: './badge.png',
     tag: d.tag || 'family-hub',
     renotify: true,
     data: { url: d.url || './index.html' }
