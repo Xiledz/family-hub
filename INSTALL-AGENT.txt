@@ -1,0 +1,12 @@
+The Cowork VM cannot write into a .claude folder on your machine (blocked by the
+remote-file tools). Move this file into place yourself, once:
+
+  From:  C:\Users\erich\Family Calendar\agents\family-hub.md
+  To:    C:\Users\erich\Family Calendar\.claude\agents\family-hub.md
+
+PowerShell one-liner from the Family Calendar folder:
+
+  New-Item -ItemType Directory -Force .claude\agents; Move-Item agents\family-hub.md .claude\agents\
+
+After that, any Claude Code session opened in this folder picks the agent up
+automatically, and it runs on the fable model.

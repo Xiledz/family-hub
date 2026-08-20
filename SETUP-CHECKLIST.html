@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Family Hub — Setup Checklist</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f1f3f7;--card:#fff;--ink:#151a22;--ink2:#5b6575;--ink3:#8b94a4;--line:#e6e9ef;
+      --soft:#f6f7fa;--ok:#0d7a5f;--okbg:#e7f4ef;--warn:#b45309;--warnbg:#fef6e4;--code:#11151b;
+      --info:#1d4ed8;--infobg:#eaf0ff}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,sans-serif;
+     -webkit-font-smoothing:antialiased;line-height:1.55}
+.wrap{max-width:840px;margin:0 auto;padding:32px 18px 90px}
+h1{font-size:31px;font-weight:700;letter-spacing:-.03em;margin:0 0 6px}
+.sub{color:var(--ink3);font-size:15px;margin:0 0 4px}
+.bar{position:sticky;top:0;z-index:10;background:rgba(241,243,247,.94);backdrop-filter:blur(14px);
+     padding:14px 0 12px;margin:18px 0 20px;border-bottom:1px solid var(--line)}
+.track{height:7px;background:var(--line);border-radius:99px;overflow:hidden}
+.fill{height:100%;width:0;background:var(--ok);border-radius:99px;transition:width .3s}
+.pct{font-size:12px;font-weight:700;color:var(--ink2);margin-top:7px;letter-spacing:.04em;
+     display:flex;justify-content:space-between;gap:10px}
+.pct button{border:0;background:transparent;color:var(--ink3);font:600 11px Inter;cursor:pointer;
+            text-decoration:underline;letter-spacing:.02em}
+section{background:var(--card);border-radius:16px;padding:22px 22px 8px;margin-bottom:14px;
+        box-shadow:0 1px 2px rgba(16,24,40,.05),0 8px 24px -18px rgba(16,24,40,.3);scroll-margin-top:82px}
+section.doneblock{background:var(--okbg);box-shadow:none;border:1px solid #c5e3d7}
+@media(prefers-color-scheme:dark){section.doneblock{background:#12271f;border-color:#1d4436}}
+h2{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink3);font-weight:700;
+   margin:0 0 4px;display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+h2 em{font-style:normal;color:var(--ink3);font-weight:600;letter-spacing:0;text-transform:none;font-size:12px}
+.stitle{font-size:19px;font-weight:700;letter-spacing:-.02em;margin:0 0 16px}
+.step{display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--line);align-items:flex-start}
+.step:last-child{border-bottom:0}
+section.doneblock .step{border-bottom-color:#cfe6dc}
+@media(prefers-color-scheme:dark){section.doneblock .step{border-bottom-color:#1d4436}}
+.step input{appearance:none;width:22px;height:22px;border:2px solid var(--line);border-radius:7px;
+            flex-shrink:0;margin:1px 0 0;cursor:pointer;position:relative;background:#fff}
+.step input:checked{background:var(--ok);border-color:var(--ok)}
+.step input:checked::after{content:"";position:absolute;left:6.5px;top:2.5px;width:5px;height:10px;
+            border:solid #fff;border-width:0 2.5px 2.5px 0;transform:rotate(43deg)}
+.step .b{flex:1;min-width:0}
+.step.done .t{opacity:.45;text-decoration:line-through}
+.t{font-size:15.5px;font-weight:600;margin-bottom:3px}
+.d{font-size:13.5px;color:var(--ink2)}
+.d + .d{margin-top:7px}
+.d a{color:var(--ink)}
+code{font-family:"JetBrains Mono",monospace;font-size:12.5px;background:var(--soft);
+     padding:2px 6px;border-radius:5px}
+section.doneblock code{background:rgba(255,255,255,.6)}
+@media(prefers-color-scheme:dark){section.doneblock code{background:rgba(0,0,0,.3)}}
+pre{position:relative;background:var(--code);color:#dfe6ef;border-radius:11px;padding:14px 46px 14px 15px;
+    margin:10px 0 4px;overflow-x:auto;font-family:"JetBrains Mono",monospace;font-size:12.5px;line-height:1.65;
+    white-space:pre}
+pre button{position:absolute;top:8px;right:8px;border:0;background:rgba(255,255,255,.11);color:#dfe6ef;
+           font:600 10.5px Inter,sans-serif;padding:6px 9px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
+pre button:hover{background:rgba(255,255,255,.2)}
+pre button.copied{background:var(--ok);color:#fff}
+.note{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:11px 13px;font-size:13px;
+      margin:10px 0 4px;line-height:1.55}
+.info{background:var(--infobg);color:var(--info);border-radius:10px;padding:11px 13px;font-size:13px;
+      margin:10px 0 4px;line-height:1.55}
+@media(prefers-color-scheme:dark){.info{background:#16213f;color:#a5b4fc}}
+.fld{display:grid;grid-template-columns:118px 1fr;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line);
+     font-size:13px;align-items:start}
+.fld:last-child{border-bottom:0}
+.fld b{font-family:"JetBrains Mono",monospace;font-size:12px;font-weight:500;color:var(--ink)}
+.fld span{color:var(--ink2)}
+.swatches{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 2px}
+.sw{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--ink2)}
+.sw i{width:15px;height:15px;border-radius:5px;display:block}
+.tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+     padding:3px 8px;border-radius:99px;background:var(--soft);color:var(--ink3);margin-left:7px;vertical-align:2px}
+.tag.opt{background:#eef2ff;color:#4338ca}
+.tag.done{background:var(--ok);color:#fff}
+@media(prefers-color-scheme:dark){.tag.opt{background:#252b34;color:#a5b4fc}}
+footer{text-align:center;color:var(--ink3);font-size:12.5px;margin-top:26px;line-height:1.7}
+@media(prefers-color-scheme:dark){
+ :root{--bg:#0f1216;--card:#171b21;--ink:#e9edf3;--ink2:#a3adbb;--ink3:#727d8d;--line:#252b34;
+       --soft:#1d222a;--warnbg:#3b2f12;--warn:#fcd34d;--okbg:#12271f}
+ .bar{background:rgba(15,18,22,.94)} .step input{background:#171b21}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Family Hub — Setup</h1>
+<p class="sub">Your keys and family are already in the files. No Node.js required — Part 3 now runs in the browser. About 30 minutes left.</p>
+
+<div class="bar"><div class="track"><div class="fill" id="fill"></div></div>
+  <div class="pct"><span id="pct">0 of 0 done</span><button id="reset">reset</button></div></div>
+
+<!-- ===================== ALREADY DONE ===================== -->
+<section class="doneblock">
+  <h2><span>Part 0 &amp; 1</span><span class="tag done">Done for you</span></h2>
+  <div class="stitle">What's already handled</div>
+
+  <div class="step"><input type="checkbox" checked><div class="b">
+    <div class="t">Supabase project created</div>
+    <div class="d">Ref <code>rauvytdltnbqrvyiornh</code></div>
+  </div></div>
+
+  <div class="step"><input type="checkbox" checked><div class="b">
+    <div class="t"><code>config.js</code> filled in</div>
+    <div class="d">Your Project URL and anon key are already in it. You do not need to open this file.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox" checked><div class="b">
+    <div class="t">Seed block written — Kelley family, passcode <code>KELLEY2009</code></div>
+    <div class="d">Erich (owner), Jess (adult), Addie (teen), Bryce (child), with colors assigned. Walkthrough is in Part 2 below — read it before you run the schema.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox" checked><div class="b">
+    <div class="t">Cron SQL pre-filled with your ref and key</div>
+    <div class="d">At the bottom of <code>schema.sql</code>, commented out. You'll uncomment it in Part 4.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PREVIEW ===================== -->
+<section>
+  <h2><span>Optional first</span><em>1 min</em></h2>
+  <div class="stitle">See it running before you build anything</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Double-click <code>run-local.bat</code></div>
+    <div class="d">Opens the app in your browser on <code>localhost:8123</code>. Leave the black window open while you look; close it when you're done. You'll see a yellow banner saying it's sample data — that's expected until the schema is run.</div>
+    <div class="note"><b>Don't double-click <code>index.html</code> directly.</b> Browsers block modular JavaScript on local files, so you'd get a dead login screen. That's what happened before. The app now detects this and tells you instead of failing silently.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PART 2 — SEED ===================== -->
+<section id="seed">
+  <h2><span>Part 2 — The seed block</span><em>~10 min</em></h2>
+  <div class="stitle">Understand it, then run the schema</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Open <code>supabase/schema.sql</code> and scroll to the bottom</div>
+    <div class="d">Look for the line <code>-- SEED — ALREADY FILLED IN</code>, roughly 3/4 of the way down. Everything above it is table definitions — do not touch those. The seed block is the only part describing <em>your</em> family, and it is these ten lines:</div>
+    <pre>insert into households (id, name, passcode, timezone) values
+  ('00000000-0000-0000-0000-000000000001', 'Kelley Family', 'KELLEY2009', 'America/Chicago');
+
+insert into members (household_id, name, color, role, sort_order, default_lead_minutes) values
+  ('00000000-0000-0000-0000-000000000001', 'Erich', '#2f6f5e', 'owner', 1, 30),
+  ('00000000-0000-0000-0000-000000000001', 'Jess',  '#b4553c', 'adult', 2, 30),
+  ('00000000-0000-0000-0000-000000000001', 'Addie', '#7d4a8c', 'teen',  3, 15),
+  ('00000000-0000-0000-0000-000000000001', 'Bryce', '#37588f', 'child', 4, 15);</pre>
+    <div class="d">That long repeated number is the household ID. It's identical on every line on purpose — it's the column that says "this person belongs to that household." Leave it alone; it's also hard-coded in <code>config.js</code> and the calendar feed URL.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Know what each field controls</div>
+    <div class="d">Reading left to right on a member line:</div>
+    <div style="margin-top:10px">
+      <div class="fld"><b>name</b><span>Must match how people will <em>type</em> it in the quick-add bar. "Soccer Thursday 5:30 Addie" only works because the name is <code>Addie</code>. Use the name everyone actually says out loud, and keep it one word.</span></div>
+      <div class="fld"><b>color</b><span>That person's stripe on every event, their dot in the week strip, their chip in the Who picker. Already contrast-checked against each other in light and dark mode.</span></div>
+      <div class="fld"><b>role</b><span><code>owner</code> · <code>adult</code> · <code>teen</code> · <code>child</code>. Only owner and adult will ever see the Money module. <b>This is the one field worth thinking twice about</b> — changing it later means hand-editing the row.</span></div>
+      <div class="fld"><b>sort_order</b><span>Order names appear in the "Who's using this phone?" list. Cosmetic.</span></div>
+      <div class="fld"><b>lead</b><span>That person's standing reminder in minutes. <code>30</code> means "always warn me 30 minutes before" so they never pick one per event. They can still override it on any single event.</span></div>
+    </div>
+    <div class="swatches">
+      <span class="sw"><i style="background:#2f6f5e"></i>Erich · green</span>
+      <span class="sw"><i style="background:#b4553c"></i>Jess · terracotta</span>
+      <span class="sw"><i style="background:#7d4a8c"></i>Addie · purple</span>
+      <span class="sw"><i style="background:#37588f"></i>Bryce · blue</span>
+    </div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Decide: is Addie a <code>teen</code> or an <code>adult</code>?</div>
+    <div class="d">Right now Addie and Bryce are both locked out of the future Money module. If you'd want Addie to see household finances someday, change her role to <code>adult</code> now — it costs nothing today and saves an awkward migration later. If not, leave it.</div>
+    <div class="info">Roles do <b>nothing at all</b> in v1 — everyone sees the same calendar. They only start mattering when the Money module gets built. You're setting it now purely so you never have to retrofit it.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Optional: add a fifth person</div>
+    <div class="d">Copy any member line, change the name, pick a color, and give it the next <code>sort_order</code>. Watch the punctuation — every line ends with a comma <b>except the last one, which ends with a semicolon</b>. That's the single most common way this fails.</div>
+    <pre>  ('00000000-0000-0000-0000-000000000001', 'Grandma', '#8a6d2f', 'adult', 5, 60);</pre>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Run the whole file</div>
+    <div class="d">Supabase dashboard → <b>SQL Editor</b> → <b>New query</b>. Select <em>everything</em> in <code>schema.sql</code> (Ctrl+A in the file), paste, click <b>Run</b>. Takes a few seconds. You want <b>Success. No rows returned</b>.</div>
+    <div class="note"><b>Run it exactly once.</b> A second run fails on "relation already exists" — harmless, but it means nothing new happened. If you truly need to start over, see the reset box at the bottom of this page.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Verify with your own eyes</div>
+    <div class="d"><b>Table Editor → members.</b> Four rows: Erich, Jess, Addie, Bryce, with their colors and roles. Then <b>Table Editor → households</b>: one row, passcode <code>KELLEY2009</code>. If both look right, the database is finished and you never touch SQL again.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Reload the local preview</div>
+    <div class="d">If <code>run-local.bat</code> is still running, refresh the browser. The yellow "sample data" banner should be gone and the passcode should now be <code>KELLEY2009</code> instead of <code>DEMO</code>. That's proof the app is talking to your database.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PART 3 ===================== -->
+<section id="keys">
+  <h2><span>Part 3 — Notification keys</span><em>~4 min</em></h2>
+  <div class="stitle">Generate the push keys — no install needed</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Double-click <code>vapid-keys.html</code></div>
+    <div class="d">Click <b>Generate keys</b>. They're created by your browser's own crypto, on your machine — nothing is uploaded and nothing gets installed. <b>Leave the page open</b> until you've pasted everything; refreshing makes a different pair.</div>
+    <div class="info"><b>This replaces the <code>npx web-push</code> command.</b> That failed because Node isn't installed on this PC. You don't need it for this step.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Add four secrets in Supabase</div>
+    <div class="d">Dashboard → <b>Edge Functions → Secrets → Add new secret</b>. Four separate entries. Each one has a Copy button on the keys page — use it, don't retype.</div>
+    <pre>VAPID_PUBLIC_KEY   (long one, ~87 characters)
+VAPID_PRIVATE_KEY  (short one, ~43 characters)
+VAPID_SUBJECT      mailto:erich.kelley@gmail.com
+HOUSEHOLD_ID       00000000-0000-0000-0000-000000000001</pre>
+    <div class="note">The <b>private</b> key goes here and nowhere else — never in <code>config.js</code>, never in the repo. Names must match exactly, including underscores.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Put the <em>public</em> key in <code>config.js</code></div>
+    <div class="d">Open <code>config.js</code> in Notepad, find the line <code>VAPID_PUBLIC: '',</code> and paste the long public key between the two quotes. Leave <code>SMS_ENABLED</code> as <code>false</code>. Save.</div>
+    <div class="note"><b>The single most common way this breaks:</b> the public key in <code>config.js</code> and the private key in Supabase come from different runs of the generator. They're a matched pair — mixed pairs fail silently, with no error anywhere.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PART 4 ===================== -->
+<section>
+  <h2><span>Part 4 — Server functions</span><em>~10 min</em></h2>
+  <div class="stitle">Deploy the reminder engine</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Install Scoop, then the Supabase CLI</div>
+    <div class="d">Since Node isn't on this machine, use <b>Scoop</b> — it's the method Supabase actually documents for Windows, and it doesn't need Node at all. Open <b>PowerShell</b> (not Command Prompt) and run these one block at a time.</div>
+    <div class="d"><b>1. Install Scoop</b> — skip if you already have it:</div>
+    <pre>Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression</pre>
+    <div class="d"><b>2. Install the Supabase CLI:</b></div>
+    <pre>scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
+scoop install supabase</pre>
+    <div class="d"><b>3. Confirm it worked:</b></div>
+    <pre>supabase --version</pre>
+    <div class="info"><b>Prefer to install Node instead?</b> Grab the LTS installer from <a href="https://nodejs.org" target="_blank">nodejs.org</a>, accept the defaults, then <b>close and reopen</b> your terminal — that last part is what people miss. After that <code>npx supabase &lt;command&gt;</code> works in place of <code>supabase &lt;command&gt;</code> everywhere below. Note that a plain global <code>npm install -g supabase</code> is no longer the supported route.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Log in and link the project</div>
+    <div class="d"><code>supabase login</code> opens a browser to authorize. Your project ref is already filled in.</div>
+    <pre>supabase login
+cd "C:\Users\erich\Family Calendar"
+supabase link --project-ref rauvytdltnbqrvyiornh</pre>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Deploy the two functions</div>
+    <div class="d">Skip <code>sms-inbound</code> — it stays undeployed until Twilio is registered.</div>
+    <pre>supabase functions deploy dispatch-reminders
+supabase functions deploy ics-feed</pre>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Schedule the every-minute check</div>
+    <div class="d">Back in the <b>SQL Editor</b>, as a <em>new, separate</em> query. Already filled in with your ref and key. This is the piece that makes "alert me at 11:30" fire at 11:30.</div>
+    <pre>select cron.schedule('reminder-dispatch', '* * * * *', $$
+  select net.http_post(
+    url     := 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/dispatch-reminders',
+    headers := '{"Content-Type":"application/json","Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJhdXZ5dGRsdG5icXJ2eWlvcm5oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxODAzMzksImV4cCI6MjEwMjc1NjMzOX0.EN7nf6O3eo7LRuepdwlSHWKlliEPOxfIhW0C1SOEIU0"}'::jsonb,
+    body    := '{}'::jsonb
+  );
+$$);</pre>
+    <div class="d">Confirm it registered:</div>
+    <pre>select jobname, schedule, active from cron.job;</pre>
+  </div></div>
+</section>
+
+<!-- ===================== PART 5 ===================== -->
+<section>
+  <h2><span>Part 5 — Put it online</span><em>~10 min</em></h2>
+  <div class="stitle">GitHub Pages</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Create the repo</div>
+    <div class="d"><a href="https://github.com/new" target="_blank">github.com/new</a> → name it <code>family-hub</code> → <b>Public</b> (Pages needs it on the free plan). Do <b>not</b> add a README or .gitignore; you already have both.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Push it</div>
+    <pre>cd "C:\Users\erich\Family Calendar"
+git init
+git add .
+git commit -m "Family Hub v1"
+git branch -M main
+git remote add origin https://github.com/YOURNAME/family-hub.git
+git push -u origin main</pre>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Turn on Pages</div>
+    <div class="d">Repo <b>Settings → Pages → Source: <code>main</code> / <code>(root)</code></b> → Save. Live in about a minute at <code>https://YOURNAME.github.io/family-hub/</code></div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Load it and confirm</div>
+    <div class="d">If it asks for a code with no yellow banner, you're connected. If you see "sample data," <code>config.js</code> didn't get pushed.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PART 6 ===================== -->
+<section>
+  <h2><span>Part 6 — Your phone</span><em>~5 min</em></h2>
+  <div class="stitle">Install it and prove the alerts work</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Add to Home Screen</div>
+    <div class="d">Open the URL in <b>Safari</b> — iOS only allows this from Safari, not Chrome. Share button → scroll → <b>Add to Home Screen</b> → Add.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Open from the icon and sign in</div>
+    <div class="d">Code <code>KELLEY2009</code>, tap <b>Erich</b>, then <b>Turn on</b> for reminders and <b>Allow</b> at the iOS prompt.</div>
+    <div class="note">Opened from a bookmark instead of the icon, everything works <em>except</em> notifications. Apple's rule. The app shows a banner when that happens.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Test end to end</div>
+    <div class="d">Add an event ~3 minutes out with an <b>At time</b> reminder. Lock the phone. It should buzz. If it doesn't: <b>Edge Functions → dispatch-reminders → Logs</b> shows whether the cron fired and what it tried to send.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PART 7 ===================== -->
+<section>
+  <h2><span>Part 7 — The family</span><em>~5 min</em></h2>
+  <div class="stitle">Onboard everyone else</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Fill in <code>FAMILY-SETUP.md</code></div>
+    <div class="d">Two placeholders near the top — the link and the code (<code>KELLEY2009</code>).</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Screenshot your Share sheet</div>
+    <div class="d">With <b>Add to Home Screen</b> visible. Send it with the instructions. This is where every non-technical person gets stuck, and a picture prevents the phone calls.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Watch the first real event land</div>
+    <div class="d">Have Jess add something while you're looking at your screen. It should appear without a refresh — that's the realtime subscription working.</div>
+  </div></div>
+</section>
+
+<!-- ===================== PART 8 ===================== -->
+<section>
+  <h2><span>Part 8 — Later</span><em>whenever</em><span class="tag opt">not today</span></h2>
+  <div class="stitle">Native calendar feed &amp; texting</div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Subscribe to the calendar feed <span class="tag opt">2 min</span></div>
+    <div class="d">Family events appear in the built-in iPhone Calendar next to work calendars. <b>Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar</b>:</div>
+    <pre>https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/ics-feed?h=00000000-0000-0000-0000-000000000001</pre>
+    <div class="note">iOS refreshes subscribed calendars on its own schedule, up to about an hour behind. Convenience view only — push is the real alert path.</div>
+  </div></div>
+
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Start Twilio registration <span class="tag opt">days–weeks</span></div>
+    <div class="d">Only if you want to text the number to add events. Buy a US number (~$1.15/mo), then <b>Messaging → Regulatory Compliance → A2P 10DLC</b> → <b>Sole Proprietor</b> (no EIN needed). $4 + $15 one time, then $2/month. Use case: <em>Customer Care</em>. Sample message:</div>
+    <pre>Soccer practice — In 30 minutes, 5:30 PM. Reply STOP to opt out.</pre>
+    <div class="d">On approval: add <code>TWILIO_SID</code> / <code>TWILIO_TOKEN</code> / <code>TWILIO_FROM</code> to secrets, <code>supabase functions deploy sms-inbound</code>, point the number's incoming-message webhook at it, put mobiles in <code>members.phone</code> (format <code>+12145551212</code>), flip <code>SMS_ENABLED</code> to <code>true</code>.</div>
+  </div></div>
+</section>
+
+<!-- ===================== ESCAPE HATCH ===================== -->
+<section>
+  <h2><span>If something goes wrong</span></h2>
+  <div class="stitle">Start the database over</div>
+  <div class="step"><input type="checkbox"><div class="b">
+    <div class="t">Wipe and re-run <span class="tag">only if needed</span></div>
+    <div class="d">Destroys every table and all data, then you paste <code>schema.sql</code> again from scratch. Safe right now because there's nothing real in there yet — <b>not</b> safe once the family is using it.</div>
+    <pre>drop schema public cascade;
+create schema public;
+grant usage on schema public to anon, authenticated, service_role;
+grant all on all tables in schema public to anon, authenticated, service_role;</pre>
+    <div class="d">If you already scheduled the cron job, remove it first so it doesn't fire against missing tables:</div>
+    <pre>select cron.unschedule('reminder-dispatch');</pre>
+  </div></div>
+</section>
+
+<footer>
+  Push keys: <b>vapid-keys.html</b> &middot; Field notes live in the comments above the seed block in <b>schema.sql</b><br>
+  Full detail: <b>SETUP.md</b> · Send the family: <b>FAMILY-SETUP.md</b> · Decisions: <b>PROJECT-BRIEF.md</b>
+</footer>
+</div>
+
+<script>
+const boxes=[...document.querySelectorAll('.step input')];
+const fill=document.getElementById('fill'), pct=document.getElementById('pct');
+function upd(){
+  const n=boxes.filter(b=>b.checked).length;
+  fill.style.width=(n/boxes.length*100)+'%';
+  pct.textContent=`${n} of ${boxes.length} done`;
+  boxes.forEach(b=>b.closest('.step').classList.toggle('done',b.checked));
+}
+boxes.forEach(b=>b.addEventListener('change',upd));
+document.getElementById('reset').onclick=()=>{boxes.forEach(b=>b.checked=false);upd()};
+upd();
+document.querySelectorAll('pre').forEach(p=>{
+  const src=p.textContent;
+  const btn=document.createElement('button');
+  btn.textContent='Copy';
+  btn.onclick=()=>navigator.clipboard.writeText(src).then(()=>{
+    btn.textContent='Copied'; btn.classList.add('copied');
+    setTimeout(()=>{btn.textContent='Copy'; btn.classList.remove('copied')},1400);
+  });
+  p.appendChild(btn);
+});
+</script>
+</body>
+</html>

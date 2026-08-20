@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=5">
+<title>Family Hub</title>
+<meta name="theme-color" content="#f1f3f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Family">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<!-- Applied before first paint so a dark-mode user never sees a white flash. -->
+<script>
+try{var t=localStorage.getItem('fh.theme');if(t&&t!=='auto')document.documentElement.dataset.theme=t;}catch(e){}
+</script>
+</head>
+<body>
+
+<!-- ============ passcode + who-am-I gate ============ -->
+<div id="gate">
+  <div class="box">
+    <h1 id="gate-h">Family Hub</h1>
+    <p id="gate-p">Enter the family code</p>
+
+    <div id="step-code">
+      <input id="code" type="text" inputmode="text" autocomplete="off" autocapitalize="characters"
+             placeholder="FAMILY CODE" aria-label="Family code">
+      <button class="go" id="code-go">Continue</button>
+      <div class="err" id="code-err"></div>
+    </div>
+
+    <div id="step-who" class="hide">
+      <div class="whogrid" id="whogrid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ app ============ -->
+<div id="app" class="hide">
+
+  <nav class="tabbar" id="tabbar" aria-label="Modules">
+    <button data-mod="calendar" aria-current="true">
+      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+      Calendar
+    </button>
+    <button data-mod="shopping">
+      <svg viewBox="0 0 24 24"><path d="M4 5h2l2.2 10.5a2 2 0 0 0 2 1.5h7.2a2 2 0 0 0 2-1.6L21 8H6.4"/><circle cx="10" cy="20" r="1.2"/><circle cx="18" cy="20" r="1.2"/></svg>
+      Shopping
+    </button>
+    <button data-mod="meals">
+      <svg viewBox="0 0 24 24"><path d="M6 3v8a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V3M8 13v8M17 3c-1.5 1.5-2 3-2 5s.5 2.5 2 2.5V21"/></svg>
+      Meals
+    </button>
+    <button data-mod="money">
+      <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M2.5 10h19"/><path d="M6 14.5h3"/></svg>
+      Money
+    </button>
+  </nav>
+
+  <header class="hdr">
+    <h1 class="hello" id="hello">Good morning<span id="hello-sub"></span></h1>
+    <button class="me" id="me" aria-label="Settings"><span class="dot"></span><span class="nm"></span></button>
+  </header>
+
+  <div id="banner" class="banner hide"></div>
+
+  <!-- quick add -->
+  <div class="qa" id="qa">
+    <form class="qa-in" id="qa-form" autocomplete="off">
+      <input id="qa-input" type="text" enterkeyhint="done"
+             placeholder="Soccer Thursday 5:30 Noah" aria-label="Quick add">
+      <button class="send" id="qa-send" type="submit" disabled aria-label="Add">&#8593;</button>
+    </form>
+    <div class="qa-hint" id="qa-hint">
+      Type it the way you'd say it. <b>Tap the mic on your keyboard and just talk.</b>
+    </div>
+    <div id="qa-prev"></div>
+  </div>
+
+  <main class="bento" id="bento"></main>
+</div>
+
+<button class="fab hide" id="fab" aria-label="Add event">+</button>
+
+<!-- ============ event sheet ============ -->
+<div class="sheet" id="sheet">
+  <div class="scrim" data-close></div>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="grab"></div>
+    <h2 id="sheet-title">New event</h2>
+    <form id="ev-form">
+      <div class="f">
+        <label for="ev-title">What</label>
+        <input id="ev-title" type="text" required placeholder="Soccer practice">
+      </div>
+      <div class="f">
+        <label>Who</label>
+        <div class="chips" id="ev-who"></div>
+      </div>
+      <div class="f row2">
+        <div>
+          <label for="ev-date">Date</label>
+          <input id="ev-date" type="date" required>
+        </div>
+        <div>
+          <label for="ev-time">Time</label>
+          <input id="ev-time" type="time">
+        </div>
+      </div>
+      <div class="f">
+        <label>Remind me</label>
+        <div class="chips" id="ev-lead"></div>
+      </div>
+      <div class="f">
+        <label for="ev-notes">Notes</label>
+        <input id="ev-notes" type="text" placeholder="Optional">
+      </div>
+      <button class="save" type="submit">Save event</button>
+      <button class="del hide" type="button" id="ev-del">Delete event</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ settings sheet ============ -->
+<div class="sheet" id="settings">
+  <div class="scrim" data-close-settings></div>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="set-title">
+    <div class="grab"></div>
+    <h2 id="set-title">Settings</h2>
+
+    <div class="f">
+      <label>Appearance</label>
+      <div class="seg" id="theme-seg">
+        <button type="button" data-theme="auto" aria-pressed="true">
+          <svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M8 20h8M12 17v3"/></svg>
+          Auto
+        </button>
+        <button type="button" data-theme="light" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.4M12 19.6V22M2 12h2.4M19.6 12H22M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M19.1 4.9l-1.7 1.7M6.6 17.4l-1.7 1.7"/></svg>
+          Light
+        </button>
+        <button type="button" data-theme="dark" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.3 8.3 0 1 0 20 14.5z"/></svg>
+          Night
+        </button>
+      </div>
+      <div class="hintline" id="theme-hint"></div>
+    </div>
+
+    <div class="f">
+      <label>My default reminder</label>
+      <div class="chips" id="set-lead"></div>
+      <div class="hintline">Every new event you add starts with this. You can still change it per event.</div>
+    </div>
+
+    <button class="plain" type="button" id="set-switch">Switch to a different person</button>
+    <button class="save" type="button" id="set-done">Done</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- If this file is opened straight off the disk (file://), browsers refuse to
+     load modular JavaScript and the app cannot start. Say so plainly instead of
+     showing a dead login screen. -->
+<script>
+if (location.protocol === 'file:') {
+  document.documentElement.innerHTML =
+    '<body style="margin:0;background:#f1f3f7;color:#151a22;font:16px/1.6 Inter,system-ui,sans-serif;' +
+    'display:grid;place-items:center;min-height:100vh;padding:28px">' +
+    '<div style="max-width:520px;background:#fff;border-radius:18px;padding:30px;' +
+    'box-shadow:0 8px 30px -18px rgba(16,24,40,.4)">' +
+    '<h1 style="margin:0 0 10px;font-size:22px;letter-spacing:-.02em">Open this through a server, not by double-clicking</h1>' +
+    '<p style="margin:0 0 16px;color:#5b6575">Your browser blocks modular JavaScript on local files, so the app can\'t start from a <code>file://</code> address. Nothing is broken.</p>' +
+    '<p style="margin:0 0 8px;color:#5b6575"><b>To preview it now:</b> double-click <code>run-local.bat</code> in this folder.</p>' +
+    '<p style="margin:0;color:#5b6575"><b>Once it\'s on GitHub Pages</b> this never comes up again — Pages serves it over https.</p>' +
+    '</div></body>';
+}
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
