@@ -19,6 +19,23 @@ const MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may
                 jul:6,july:6,aug:7,august:7,sep:8,sept:8,september:8,oct:9,october:9,
                 nov:10,november:10,dec:11,december:11};
 
+/* ---------------------------------------------------------------------------
+ * ROLE VOCABULARY
+ *
+ * The database enforces exactly these six values. Everything a person might
+ * type has to land on one of them or be dropped — never invented. Longest
+ * phrases are matched first, so "is dropping off" beats "dropping".
+ * -------------------------------------------------------------------------*/
+const ROLE_WORDS = [
+  [/\b(?:is\s+)?(?:driving|drives|driver|taking|takes|has|got)(?:\s+(?:him|her|them|us|me))?\b/i, 'driving'],
+  [/\b(?:is\s+)?(?:dropping|drops|drop)(?:\s+(?:him|her|them|us|me))?\s*off\b|\bdropoff\b/i, 'dropoff'],
+  [/\b(?:is\s+)?(?:picking|picks|pick)(?:\s+(?:him|her|them|us|me))?\s*up\b|\bpickup\b|\b(?:is\s+)?(?:collecting|collects|grabbing|grabs)(?:\s+(?:him|her|them|us|me))?\b/i, 'pickup'],
+  [/\b(?:is\s+)?(?:helping|helps|volunteering|volunteers|chaperoning|chaperones)\b/i, 'helping'],
+  [/\b(?:is\s+)?(?:maybe|might|optional|if\s+free)\b/i, 'optional'],
+  [/\b(?:is\s+)?(?:going|attending|attends|coming|comes)\b/i, 'going'],
+];
+const ROLE_VALUES = ['going','driving','dropoff','pickup','helping','optional'];
+
 const pad = n => String(n).padStart(2,'0');
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x; };
@@ -38,7 +55,7 @@ export function parseQuickAdd(input, opts = {}) {
   const out = {
     title: '', date: null, start: null, end: null, allDay: false,
     member: null, leadMinutes: opts.defaultLead ?? 30,
-    repeat: null, warnings: [], matched: []
+    repeat: null, people: [], warnings: [], matched: []
   };
   if (!raw) { out.warnings.push('Nothing to add'); return out; }
 
@@ -230,6 +247,12 @@ export function parseQuickAdd(input, opts = {}) {
     else if ((m = findFree(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i))) {
       out.start = hm(+m[1], m[2]?+m[2]:0, m[3]); take(m,'time');
     }
+    else if ((m = findFree(/\bat\s+(\d{1,2})(?!\s*[:\d])\b/i))) {
+      // "at 4" — the preposition is what makes this a time and not a quantity.
+      let h = +m[1];
+      if (h >= 1 && h <= 6) h += 12;                 // waking hours
+      out.start = `${pad(h)}:00`; take(m,'time');
+    }
     else if ((m = findFree(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/))) {
       // bare "5:30" — assume waking hours, so 1:00-6:59 means PM
       let h = +m[1]; const mi = +m[2];
@@ -249,21 +272,90 @@ export function parseQuickAdd(input, opts = {}) {
   if ((m = find(/\ball[- ]day\b/i))) { out.allDay = true; out.start = null; out.end = null; take(m,'allday'); }
   if (!out.start && !out.allDay) out.allDay = true;
 
-  // ---- 10. person -------------------------------------------------------
-  if ((m = find(/\b(?:everyone|everybody|all of us|family|whole family)\b/i))) {
-    out.member = null; out.matched.push('member'); take(m,'member');
+  // ---- 10. people and their roles ---------------------------------------
+  /* Turns "Soccer Thursday 5:30 Bryce, Jess driving, Erich picks up" into
+     typed rows the database can enforce:
+        Bryce -> going,  Jess -> driving,  Erich -> pickup
+     Every name is resolved against the real member list, so nothing enters
+     the system as free text, and every role lands on the closed vocabulary
+     or is dropped. Roles are never invented from unrecognised words. */
+  if ((m = find(/\b(?:everyone|everybody|all of us|the family|whole family)\b/i))) {
+    out.member = null; out.matched.push('member'); take(m, 'member');
   } else {
-    // longest name first so "Mary Beth" beats "Mary"
-    for (const name of [...members].sort((a,b)=>b.length-a.length)) {
-      const re = new RegExp(`(?:^|[\\s,])(?:for\\s+)?(${escapeRe(name)})('s|s')?(?=$|[\\s,.!?])`, 'i');
-      const mm = re.exec(raw);
-      if (mm) {
-        out.member = name;
+    // 10a. Every mention of every known member, with its position. Longest
+    //      names first so "Mary Beth" is not shadowed by "Mary".
+    const mentions = [];
+    for (const name of [...members].sort((a, b) => b.length - a.length)) {
+      const re = new RegExp(`(?:^|[\\s,;&])(${escapeRe(name)})('s|s')?(?=$|[\\s,;.&!?])`, 'gi');
+      let mm;
+      while ((mm = re.exec(raw))) {
         const at = mm.index + mm[0].indexOf(mm[1]);
-        spans.push([at, at + mm[1].length + (mm[2] ? mm[2].length : 0)]);
-        out.matched.push('member');
-        break;
+        const end = at + mm[1].length + (mm[2] ? mm[2].length : 0);
+        // skip if this position was already claimed by a longer name
+        if (!mentions.some(x => at < x.end && end > x.at)) {
+          mentions.push({ name, at, end });
+        }
+        re.lastIndex = mm.index + 1;
       }
+    }
+
+    // 10b. First person singular counts as a mention of the sender, so
+    //      "I'm taking her" attributes the drive to whoever sent it.
+    if (opts.me) {
+      const meRe = /(?:^|[\s,;])(i'm|i am|im|myself|me|i)(?=$|[\s,;.!?])/gi;
+      let mm;
+      while ((mm = meRe.exec(raw))) {
+        const at = mm.index + mm[0].indexOf(mm[1]);
+        const end = at + mm[1].length;
+        if (!mentions.some(x => at < x.end && end > x.at)) {
+          mentions.push({ name: opts.me, at, end, self: true });
+        }
+      }
+    }
+
+    mentions.sort((a, b) => a.at - b.at);
+
+    // 10c. A role belongs to the nearest name BEFORE it. The window runs from
+    //      the end of one name to the start of the next, so in
+    //      "Jess drops off Erich picks up" each verb stays with its own person.
+    for (let k = 0; k < mentions.length; k++) {
+      const from = mentions[k].end;
+      const to = k + 1 < mentions.length ? mentions[k + 1].at : raw.length;
+      const window = raw.slice(from, to);
+      for (const [re, role] of ROLE_WORDS) {
+        const hit = re.exec(window);
+        re.lastIndex = 0;
+        if (hit) {
+          mentions[k].role = role;
+          spans.push([from + hit.index, from + hit.index + hit[0].length]);
+          break;
+        }
+      }
+    }
+
+    // 10d. Anything with no verb attached is simply attending. This is the
+    //      safe default: it never silently promotes someone to driver.
+    for (const mn of mentions) {
+      if (!mn.role) mn.role = 'going';
+      spans.push([mn.at, mn.end]);
+    }
+
+    // 10e. Collapse duplicates, keeping the most specific role per person.
+    const seen = new Map();
+    for (const mn of mentions) {
+      const key = mn.name + '|' + mn.role;
+      if (!seen.has(key)) seen.set(key, { name: mn.name, role: mn.role });
+    }
+    out.people = [...seen.values()];
+
+    // 10f. The primary person — whose event it is, and what colour it takes.
+    //      Whoever is actually attending outranks whoever is driving them.
+    const going = out.people.find(x => x.role === 'going');
+    out.member = going ? going.name : (out.people[0] ? out.people[0].name : null);
+    if (out.people.length) out.matched.push('member');
+
+    if (out.people.length > 1 && !out.people.some(x => x.role !== 'going')) {
+      out.warnings.push('Several people, no roles given — everyone marked as going.');
     }
   }
 

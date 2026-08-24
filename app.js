@@ -141,12 +141,45 @@ const DB = {
       : state.db.from('events').insert(row).select().single();
     const { data, error } = await q;
     if (error) throw error;
+    await DB.syncPeople(data.id, e.people);
     await DB.setReminder(data, e.lead_minutes);
     await DB.loadEvents();
   },
 
   /* fire_at is computed here, on write, so the dispatcher only ever runs one
      cheap indexed range scan per minute instead of scanning every event. */
+  /* Roles carry different urgency. A driver has to leave the house; a
+     passenger only has to be ready. Mirrors role_default_lead() in SQL —
+     if you change one, change the other. */
+  roleLead(role, memberDefault){
+    const d = memberDefault ?? 30;
+    if (role === 'driving' || role === 'dropoff') return Math.max(d, 45);
+    if (role === 'pickup') return Math.max(d, 30);
+    return d;
+  },
+
+  /* Replace the cast wholesale. Names arrive resolved against the real member
+     list, so nothing enters as free text; anything that does not resolve is
+     dropped rather than invented. */
+  async syncPeople(eventId, people){
+    if (state.demo || !eventId) return;
+    await state.db.from('event_people').delete().eq('event_id', eventId);
+    if (!people || !people.length) return;
+    const rows = [];
+    for (const p of people) {
+      const mem = state.members.find(m => m.name === p.name);
+      if (!mem) continue;                       // unknown name -> not stored
+      rows.push({
+        household_id: CONFIG.HOUSEHOLD_ID,
+        event_id: eventId,
+        member_id: mem.id,
+        role: p.role,
+        lead_minutes: DB.roleLead(p.role, mem.default_lead_minutes)
+      });
+    }
+    if (rows.length) await state.db.from('event_people').insert(rows);
+  },
+
   async setReminder(row, lead){
     if (state.demo) return;
     // Series reminders are generated 14 days at a time by the materializer cron.
@@ -160,13 +193,28 @@ const DB = {
     const base = row.all_day
       ? new Date(`${row.event_date}T09:00:00`)          // all-day -> 9am local
       : new Date(row.starts_at);
-    const fire = new Date(base.getTime() - lead*60000);
-    await state.db.from('reminders').insert({
+
+    /* ONE REMINDER PER PERSON, each at their own lead.
+       This is the whole point of tracking roles. The parent driving needs to
+       be told 45 minutes out because they have to leave; the kid being driven
+       needs 15. A single reminder on the primary person gets one of them
+       wrong every time — usually the one who has to do something about it. */
+    const { data: cast } = await state.db.from('event_people')
+      .select('member_id, role, lead_minutes').eq('event_id', row.id);
+
+    const rows = (cast && cast.length)
+      ? cast.map(c => ({
+          member_id: c.member_id,
+          lead: c.lead_minutes ?? lead
+        }))
+      : [{ member_id: row.member_id, lead }];      // no cast -> the old behaviour
+
+    await state.db.from('reminders').insert(rows.map(r => ({
       household_id: CONFIG.HOUSEHOLD_ID, event_id: row.id,
-      member_id: row.member_id, lead_minutes: lead,
+      member_id: r.member_id, lead_minutes: r.lead,
       channel: CONFIG.SMS_ENABLED ? 'sms' : 'push',
-      fire_at: fire.toISOString()
-    });
+      fire_at: new Date(base.getTime() - r.lead*60000).toISOString()
+    })));
   },
 
   async deleteEvent(id){
@@ -627,7 +675,8 @@ function parsedToEvent(p){
     repeat_freq:     p.repeat?.freq     ?? null,
     repeat_interval: p.repeat?.interval ?? 1,
     repeat_days:     p.repeat?.days     ?? [],
-    repeat_until:    p.repeat?.until    ?? null
+    repeat_until:    p.repeat?.until    ?? null,
+    people:          p.people ?? []
   };
 }
 async function commitParsed(){
