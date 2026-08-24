@@ -603,6 +603,7 @@ function preview(){
       <div class="meta">
         <span class="mtag">${d.day}</span><span class="mtag">${d.time}</span>
         <span class="mtag">${d.who}</span><span class="mtag">&#9201; ${d.lead}</span>
+        ${d.repeat ? `<span class="mtag">&#8635; ${esc(d.repeat)}</span>` : ''}
       </div>
       <div class="acts">
         <button type="button" id="qa-edit">Edit</button>
@@ -620,7 +621,13 @@ function parsedToEvent(p){
     all_day: p.allDay, event_date: p.date,
     starts_at: p.allDay ? null : new Date(`${p.date}T${p.start}:00`).toISOString(),
     ends_at:   p.end ? new Date(`${p.date}T${p.end}:00`).toISOString() : null,
-    member_id: mem?.id || null, lead_minutes: p.leadMinutes, source: 'web'
+    member_id: mem?.id || null, lead_minutes: p.leadMinutes, source: 'web',
+    // The parser now returns a real recurrence rule. Dropping it here was the
+    // bug that made "every Tuesday" silently produce a single event.
+    repeat_freq:     p.repeat?.freq     ?? null,
+    repeat_interval: p.repeat?.interval ?? 1,
+    repeat_days:     p.repeat?.days     ?? [],
+    repeat_until:    p.repeat?.until    ?? null
   };
 }
 async function commitParsed(){
@@ -931,5 +938,32 @@ function urlB64(s){
   const b = atob((s + p).replace(/-/g,'+').replace(/_/g,'/'));
   return Uint8Array.from([...b].map(c => c.charCodeAt(0)));
 }
+
+/* ==========================================================================
+ * DAY ROLLOVER
+ *
+ * "Today" was resolved once, at load. On a phone that is never closed — which
+ * is exactly what a home-screen icon encourages — the app would still be
+ * showing yesterday's date and yesterday's agenda the next morning, with no
+ * hint anything was stale.
+ *
+ * Re-render whenever the app comes back to the foreground AND the calendar day
+ * has actually changed. Gating on the date means waking the phone fifty times
+ * in an afternoon costs nothing. The one-minute timer is the backstop for a
+ * screen left on across midnight, where no visibility event ever fires.
+ * ======================================================================== */
+let lastDay = ymd(new Date());
+function checkRollover(){
+  const today = ymd(new Date());
+  if (today === lastDay) return;
+  lastDay = today;
+  state.cursor = today;                    // a YYYY-MM-DD string, not a Date
+  render();
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkRollover();
+});
+window.addEventListener('focus', checkRollover);
+setInterval(checkRollover, 60_000);
 
 boot();

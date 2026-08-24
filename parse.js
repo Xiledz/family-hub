@@ -38,7 +38,7 @@ export function parseQuickAdd(input, opts = {}) {
   const out = {
     title: '', date: null, start: null, end: null, allDay: false,
     member: null, leadMinutes: opts.defaultLead ?? 30,
-    recurrence: null, warnings: [], matched: []
+    repeat: null, warnings: [], matched: []
   };
   if (!raw) { out.warnings.push('Nothing to add'); return out; }
 
@@ -50,6 +50,20 @@ export function parseQuickAdd(input, opts = {}) {
     return true;
   };
   const find = re => { re.lastIndex = 0; return re.exec(raw); };
+  /* Like find(), but skips any match that overlaps text already claimed by an
+     earlier rule. Without this, "every Tuesday 4pm until 12/31" lets the time
+     RANGE matcher read "4pm until 12" as 4:00pm-12:00pm, because it searches
+     the raw string and cannot see that "until 12/31" is already spoken for. */
+  const overlaps = (s, e) => spans.some(([a, b]) => s < b && e > a);
+  const findFree = re => {
+    const rx = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let m;
+    while ((m = rx.exec(raw))) {
+      if (!overlaps(m.index, m.index + m[0].length)) return m;
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+    }
+    return null;
+  };
 
   // ---- 1. reminder lead time -------------------------------------------
   // Must run first: "1 hour before" contains a time-like phrase that the time
@@ -67,16 +81,68 @@ export function parseQuickAdd(input, opts = {}) {
     out.leadMinutes = null; take(m, 'lead');
   }
 
-  // ---- 2. recurrence (flagged, not yet built) ---------------------------
-  if ((m = find(/\b(every|each)\s+(day|week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekday|weekend)\b/i))) {
-    out.recurrence = m[0].toLowerCase();
-    out.warnings.push(`Repeating events aren't supported yet — this will be added once, on the first date.`);
-    take(m, 'recurrence');
+  // ---- 2. recurrence ----------------------------------------------------
+  // Runs before date parsing so "every Tuesday" is claimed as a RULE, not
+  // misread as the single date "Tuesday". Order inside matters too: the more
+  // specific phrases must be tried first, or "every other Tuesday" matches the
+  // plain "every <weekday>" rule and silently loses its interval.
+  {
+    const WD = '(sun|sunday|mon|monday|tue|tues|tuesday|wed|weds|wednesday|' +
+               'thu|thur|thurs|thursday|fri|friday|sat|saturday)';
+    const set = (freq, interval, days) => ({ freq, interval, days, until: null });
+    let r;
+
+    if ((r = find(new RegExp(`\\bevery\\s+other\\s+${WD}\\b`, 'i')))) {
+      out.repeat = set('weekly', 2, [WD_INDEX[r[1].toLowerCase()]]); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+other\s+week\b|\bbi-?weekly\b/i))) {
+      out.repeat = set('weekly', 2, []); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+other\s+day\b/i))) {
+      out.repeat = set('daily', 2, []); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+(\d+)\s+(days?|weeks?|months?)\b/i))) {
+      const n = Math.max(1, parseInt(r[1], 10)), u = r[2].toLowerCase();
+      out.repeat = set(u.startsWith('d') ? 'daily' : u.startsWith('w') ? 'weekly' : 'monthly', n, []);
+      take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+weekday\b|\bweekdays\b/i))) {
+      out.repeat = set('weekly', 1, [1,2,3,4,5]); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+weekend\b/i))) {
+      out.repeat = set('weekly', 1, [0,6]); take(r, 'repeat');
+    } else if ((r = find(new RegExp(`\\bevery\\s+${WD}(?:\\s*(?:,|and|&|\\/)\\s*${WD})*\\b`, 'i')))) {
+      const days = [...new Set((r[0].match(new RegExp(WD, 'gi')) || [])
+        .map(w => WD_INDEX[w.toLowerCase()]))].sort((a,b) => a-b);
+      out.repeat = set('weekly', 1, days); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+day\b|\bdaily\b/i))) {
+      out.repeat = set('daily', 1, []); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+week\b|\bweekly\b/i))) {
+      out.repeat = set('weekly', 1, []); take(r, 'repeat');
+    } else if ((r = find(/\bevery\s+month\b|\bmonthly\b/i))) {
+      out.repeat = set('monthly', 1, []); take(r, 'repeat');
+    }
+
+    // "...until May 30", "...through 12/31". Only meaningful on a series.
+    if (out.repeat) {
+      const mn = Object.keys(MONTHS).sort((a,b) => b.length-a.length).join('|');
+      const ENDS = '(?:until|through|thru|til|till|ending|ends)';
+      let u;
+      if ((u = find(new RegExp(`\\b${ENDS}\\s+(${mn})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s*(\\d{4}))?\\b`, 'i')))) {
+        const mo = MONTHS[u[1].toLowerCase()], da = +u[2];
+        const yr = u[3] ? +u[3] : now.getFullYear();
+        const d = new Date(yr, mo, da);
+        if (!u[3] && d < startOfDay(now)) d.setFullYear(yr + 1);
+        out.repeat.until = ymd(d); take(u, 'until');
+      } else if ((u = find(new RegExp(`\\b${ENDS}\\s+(\\d{1,2})[/-](\\d{1,2})(?:[/-](\\d{2,4}))?\\b`, 'i')))) {
+        const mo = +u[1]-1, da = +u[2];
+        let yr = u[3] ? +u[3] : now.getFullYear();
+        if (yr < 100) yr += 2000;
+        const d = new Date(yr, mo, da);
+        if (!u[3] && d < startOfDay(now)) d.setFullYear(yr + 1);
+        out.repeat.until = ymd(d); take(u, 'until');
+      }
+    }
   }
 
   // ---- 3. explicit dates ------------------------------------------------
   // 8/21, 8-21-26, 08/21/2026
-  if ((m = find(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/))) {
+  if ((m = findFree(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/))) {
     const mo = +m[1]-1, da = +m[2];
     let yr = m[3] ? +m[3] : now.getFullYear();
     if (yr < 100) yr += 2000;
@@ -89,8 +155,8 @@ export function parseQuickAdd(input, opts = {}) {
   // "Aug 21", "August 21st", "21 Aug"
   if (!out.date) {
     const mn = Object.keys(MONTHS).sort((a,b)=>b.length-a.length).join('|');
-    if ((m = find(new RegExp(`\\b(${mn})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`,'i'))) ||
-        (m = find(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${mn})\\b`,'i')))) {
+    if ((m = findFree(new RegExp(`\\b(${mn})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`,'i'))) ||
+        (m = findFree(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${mn})\\b`,'i')))) {
       const a = m[1].toLowerCase(), b = m[2].toLowerCase();
       const mo = MONTHS[a] !== undefined ? MONTHS[a] : MONTHS[b];
       const da = MONTHS[a] !== undefined ? +m[2] : +m[1];
@@ -102,11 +168,11 @@ export function parseQuickAdd(input, opts = {}) {
 
   // ---- 4. relative days -------------------------------------------------
   if (!out.date) {
-    if ((m = find(/\btoday\b/i)))                    { out.date = ymd(now); take(m,'date'); }
-    else if ((m = find(/\btonight\b/i)))             { out.date = ymd(now); out.start = out.start||'19:00'; take(m,'date'); }
-    else if ((m = find(/\btomorrow\b|\btmrw\b/i)))   { out.date = ymd(addDays(now,1)); take(m,'date'); }
-    else if ((m = find(/\bday\s+after\s+tomorrow\b/i))) { out.date = ymd(addDays(now,2)); take(m,'date'); }
-    else if ((m = find(/\bin\s+(\d+)\s+(day|days|week|weeks)\b/i))) {
+    if ((m = findFree(/\btoday\b/i)))                    { out.date = ymd(now); take(m,'date'); }
+    else if ((m = findFree(/\btonight\b/i)))             { out.date = ymd(now); out.start = out.start||'19:00'; take(m,'date'); }
+    else if ((m = findFree(/\btomorrow\b|\btmrw\b/i)))   { out.date = ymd(addDays(now,1)); take(m,'date'); }
+    else if ((m = findFree(/\bday\s+after\s+tomorrow\b/i))) { out.date = ymd(addDays(now,2)); take(m,'date'); }
+    else if ((m = findFree(/\bin\s+(\d+)\s+(day|days|week|weeks)\b/i))) {
       out.date = ymd(addDays(now, +m[1] * (/w/i.test(m[2]) ? 7 : 1))); take(m,'date');
     }
   }
@@ -114,7 +180,7 @@ export function parseQuickAdd(input, opts = {}) {
   // ---- 5. weekday names -------------------------------------------------
   if (!out.date) {
     const names = [...WEEKDAYS, ...WD_ABBR].sort((a,b)=>b.length-a.length).join('|');
-    if ((m = find(new RegExp(`\\b(next|this)?\\s*(${names})\\b`,'i')))) {
+    if ((m = findFree(new RegExp(`\\b(next|this)?\\s*(${names})\\b`,'i')))) {
       const target = WD_INDEX[m[2].toLowerCase()];
       const base = startOfDay(now);
       let delta = (target - base.getDay() + 7) % 7;
@@ -124,8 +190,24 @@ export function parseQuickAdd(input, opts = {}) {
     }
   }
 
+  // ---- 5b. first date of a weekday series -------------------------------
+  // "every Tuesday" names no start date. The series has to begin somewhere,
+  // and the only sane answer is the next Tuesday that has not happened yet.
+  if (out.repeat && !out.matched.includes('date') && out.repeat.days.length) {
+    const base = startOfDay(now);
+    let best = null;
+    for (const dw of out.repeat.days) {
+      let delta = (dw - base.getDay() + 7) % 7;
+      if (delta === 0) delta = 7;                 // today already started
+      const cand = addDays(base, delta);
+      if (!best || cand < best) best = cand;
+    }
+    out.date = ymd(best);
+    out.matched.push('date');
+  }
+
   // ---- 6. time ranges: "9-10:30", "2pm to 4pm" --------------------------
-  if ((m = find(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|to|until|till)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i))) {
+  if ((m = findFree(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|to|until|till)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i))) {
     const ap1 = m[3], ap2 = m[6];
     let h1 = +m[1], h2 = +m[4];
     const mi1 = m[2] ? +m[2] : 0, mi2 = m[5] ? +m[5] : 0;
@@ -145,10 +227,10 @@ export function parseQuickAdd(input, opts = {}) {
   if (!out.start) {
     if ((m = find(/\bnoon\b/i)))          { out.start = '12:00'; take(m,'time'); }
     else if ((m = find(/\bmidnight\b/i))) { out.start = '00:00'; take(m,'time'); }
-    else if ((m = find(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i))) {
+    else if ((m = findFree(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i))) {
       out.start = hm(+m[1], m[2]?+m[2]:0, m[3]); take(m,'time');
     }
-    else if ((m = find(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/))) {
+    else if ((m = findFree(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/))) {
       // bare "5:30" — assume waking hours, so 1:00-6:59 means PM
       let h = +m[1]; const mi = +m[2];
       if (h >= 1 && h <= 6) h += 12;
@@ -234,12 +316,24 @@ export function describe(p, tz='America/Chicago'){
   const day = d.toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'});
   const time = p.allDay ? 'All day'
     : t12(p.start) + (p.end ? `–${t12(p.end)}` : '');
+  const rep = !p.repeat ? null : (() => {
+    const R = p.repeat, WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const every = R.interval === 1 ? '' : R.interval === 2 ? 'other ' : `${R.interval} `;
+    let t;
+    if (R.freq === 'daily')        t = `every ${every}day${R.interval > 2 ? 's' : ''}`;
+    else if (R.freq === 'monthly') t = `every ${every}month${R.interval > 2 ? 's' : ''}`;
+    else t = R.days.length
+      ? `every ${every}${R.days.map(d => WD[d]).join(', ')}`
+      : `every ${every}week${R.interval > 2 ? 's' : ''}`;
+    return R.until ? `${t}, until ${new Date(R.until + 'T12:00:00')
+      .toLocaleDateString('en-US',{month:'short', day:'numeric'})}` : t;
+  })();
   const lead = p.leadMinutes == null ? 'no reminder'
     : p.leadMinutes === 0 ? 'alert at start'
     : p.leadMinutes % 1440 === 0 ? `alert ${p.leadMinutes/1440}d before`
     : p.leadMinutes % 60 === 0 ? `alert ${p.leadMinutes/60}h before`
     : `alert ${p.leadMinutes}m before`;
-  return { day, time, who: p.member || 'Everyone', lead };
+  return { day, time, who: p.member || 'Everyone', lead, repeat: rep };
 }
 function t12(t){
   const [h,mi] = t.split(':').map(Number);
