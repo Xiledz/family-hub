@@ -133,6 +133,7 @@ const DB = {
       repeat_interval: e.repeat_interval ?? 1,
       repeat_days: e.repeat_days ?? [],
       repeat_until: e.repeat_until ?? null,
+      reminder_lead_minutes: e.lead_minutes ?? null,
       created_by: state.me?.id || null, source: e.source || 'web'
     };
     const q = e.id
