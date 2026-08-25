@@ -1,4 +1,31 @@
 /* ============================================================================
+ * sms-inbound — text the family number to add an event.
+ *
+ * Webhook: https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound
+ * Verify JWT MUST be OFF — Twilio cannot send an Authorization header.
+ * Because it is off, the Twilio signature is the ONLY thing standing between
+ * this function and anyone who learns the URL. Do not remove that check.
+ *
+ * The sender's number is matched against members.phone, so the event is
+ * attributed to whoever texted. Same parser as the web quick-add bar — one
+ * grammar, two front doors.
+ * ==========================================================================*/
+import { createClient } from 'jsr:@supabase/supabase-js@2';
+
+
+/* ===========================================================================
+ * PARSER — inlined, not imported.
+ *
+ * Supabase's bundler refuses remote hosts, and its in-browser editor drops
+ * second files on deploy. So the parser lives here as a verbatim copy of
+ * parse.js from the repo.
+ *
+ * THIS IS A DUPLICATE. If parse.js changes, replace this block with the new
+ * version and redeploy, or the web quick-add bar and the SMS front door will
+ * quietly start speaking different grammars — both working, just differently,
+ * which is the hardest kind of bug to notice.
+ * ========================================================================= */
+/* ============================================================================
  * Family Hub — natural-language quick-add parser
  *
  * "Soccer practice Thursday 5:30 Noah remind 1 hr before"
@@ -47,7 +74,7 @@ const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return
  * @param {Date}   opts.now         reference time (injectable for tests)
  * @param {number} opts.defaultLead the member's default reminder lead, minutes
  */
-export function parseQuickAdd(input, opts = {}) {
+function parseQuickAdd(input, opts = {}) {
   const members = opts.members || [];
   const now = opts.now || new Date();
   const raw = String(input || '').trim();
@@ -417,7 +444,7 @@ function strip(raw, spans){
 }
 
 /** Human-readable summary for the confirm chip. */
-export function describe(p, tz='America/Chicago'){
+function describe(p, tz='America/Chicago'){
   const d = new Date(p.date + 'T12:00:00');
   const day = d.toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'});
   const time = p.allDay ? 'All day'
@@ -447,3 +474,313 @@ function t12(t){
   const hh = h % 12 === 0 ? 12 : h % 12;
   return mi ? `${hh}:${pad(mi)} ${ap}` : `${hh} ${ap}`;
 }
+
+const admin = () => createClient(
+  Deno.env.get('SUPABASE_URL')!,
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  { auth: { persistSession: false } }
+);
+
+const HOUSEHOLD = Deno.env.get('HOUSEHOLD_ID')!;
+const TW_TOKEN  = Deno.env.get('TWILIO_TOKEN') ?? '';
+
+/* ---------------------------------------------------------------------------
+ * TIMEZONE
+ * Edge functions run in UTC; the family lives in America/Chicago. Two separate
+ * conversions, and getting either wrong is a silent five-hour error.
+ * -------------------------------------------------------------------------*/
+function tzOffsetMs(at: Date, tz: string): number {
+  const f = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  const p: Record<string, string> = {};
+  for (const part of f.formatToParts(at)) p[part.type] = part.value;
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - at.getTime();
+}
+const nowInTz = (tz: string) => new Date(Date.now() + tzOffsetMs(new Date(), tz));
+function wallToUtc(date: string, time: string, tz: string): string {
+  const naive = Date.parse(`${date}T${time}:00Z`);
+  let ms = naive;
+  for (let i = 0; i < 2; i++) ms = naive - tzOffsetMs(new Date(ms), tz);
+  return new Date(ms).toISOString();
+}
+
+/* Twilio signs the EXACT url configured in its console. Rebuilding it from
+   request headers does not work: inside the edge runtime the path is
+   "/sms-inbound", not "/functions/v1/sms-inbound". */
+const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
+
+async function signatureOk(url: string, params: URLSearchParams, given: string) {
+  if (!TW_TOKEN || !given) return false;
+  let data = url;
+  for (const k of [...params.keys()].sort()) data += k + params.get(k);
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(TW_TOKEN),
+    { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+  const mine = btoa(String.fromCharCode(...new Uint8Array(mac)));
+  if (mine.length !== given.length) return false;
+  let diff = 0;
+  for (let i = 0; i < mine.length; i++) diff |= mine.charCodeAt(i) ^ given.charCodeAt(i);
+  return diff === 0;
+}
+
+const norm  = (s: string) => s.replace(/\D/g, '').slice(-10);
+const twiml = (msg: string) => new Response(
+  `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${
+    msg.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</Message></Response>`,
+  { headers: { 'Content-Type': 'text/xml' } });
+
+const pretty = (d: string) =>
+  new Date(d + 'T12:00:00Z').toLocaleDateString('en-US',
+    { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+/* Roles carry different urgency — a driver has to leave the house. Mirrors
+   role_default_lead() in SQL and DB.roleLead() in app.js. All three must agree. */
+function roleLead(role: string, memberDefault: number | null) {
+  const d = memberDefault ?? 30;
+  if (role === 'driving' || role === 'dropoff') return Math.max(d, 45);
+  if (role === 'pickup') return Math.max(d, 30);
+  return d;
+}
+
+/* Write the cast, then one reminder per person at their own lead. A series
+   leaves reminders to the nightly materializer. */
+async function writeCastAndReminders(db: any, ev: any, people: any[], members: any[],
+                                     lead: number | null, tz: string, isSeries: boolean) {
+  await db.from('event_people').delete().eq('event_id', ev.id);
+  const rows = [];
+  for (const p of people ?? []) {
+    const mem = members.find((m: any) => m.name === p.name);
+    if (!mem) continue;                                  // unknown -> not stored
+    rows.push({ household_id: HOUSEHOLD, event_id: ev.id, member_id: mem.id,
+                role: p.role, lead_minutes: roleLead(p.role, mem.default_lead_minutes) });
+  }
+  if (rows.length) await db.from('event_people').insert(rows);
+
+  await db.from('reminders').delete().eq('event_id', ev.id).is('sent_at', null);
+  if (lead == null || isSeries) return;
+
+  const baseIso = ev.all_day ? wallToUtc(ev.event_date, '09:00', tz) : ev.starts_at;
+  const cast = rows.length ? rows : [{ member_id: ev.member_id, lead_minutes: lead }];
+  const reminders = [];
+  for (const c of cast) {
+    if (!c.member_id) continue;
+    const { count } = await db.from('push_subscriptions')
+      .select('id', { count: 'exact', head: true }).eq('member_id', c.member_id);
+    reminders.push({
+      household_id: HOUSEHOLD, event_id: ev.id, member_id: c.member_id,
+      lead_minutes: c.lead_minutes ?? lead,
+      channel: (count ?? 0) > 0 ? 'push' : 'sms',
+      fire_at: new Date(Date.parse(baseIso) - (c.lead_minutes ?? lead) * 60_000).toISOString()
+    });
+  }
+  if (reminders.length) await db.from('reminders').insert(reminders);
+}
+
+async function createEvent(db: any, p: any, members: any[], sender: any, tz: string, date: string) {
+  const member   = members.find((m: any) => m.name === p.member);
+  const startsAt = p.allDay ? null : wallToUtc(date, p.start, tz);
+  const { data: ev, error } = await db.from('events').insert({
+    household_id: HOUSEHOLD, member_id: member?.id ?? null,
+    title: p.title, all_day: p.allDay, event_date: date, starts_at: startsAt,
+    reminder_lead_minutes: p.leadMinutes ?? null,
+    repeat_freq:     p.repeat?.freq     ?? null,
+    repeat_interval: p.repeat?.interval ?? 1,
+    repeat_days:     p.repeat?.days     ?? [],
+    repeat_until:    p.repeat?.until    ?? null,
+    created_by: sender.id, source: 'sms'
+  }).select().single();
+  if (error) return null;
+  await writeCastAndReminders(db, ev, p.people, members, p.leadMinutes, tz, !!p.repeat);
+  return ev;
+}
+
+function confirmText(p: any, date: string) {
+  const d = describe({ ...p, date });
+  const cast = (p.people ?? []).length
+    ? (p.people as any[]).map(x => x.role === 'going' ? x.name : `${x.name} (${x.role})`).join(', ')
+    : 'Everyone';
+  return `Added: ${p.title}\n${pretty(date)} · ${d.time}` +
+         (d.repeat ? `\n${d.repeat}` : '') +
+         `\n${cast}\n${d.lead}`;
+}
+
+/* ---------------------------------------------------------------------------
+ * EDITING
+ * "planning committee moved to Monday at 4" has to find the event you mean,
+ * work out the change, and — if it repeats — ask whether you meant one
+ * occurrence or all of them. Never guess that one.
+ * -------------------------------------------------------------------------*/
+const EDIT_RE = /^(?:(?:can you\s+)?(?:move|change|reschedule|resched|shift|push)\s+)?(.+?)\s+(?:is\s+)?(?:moved|changed|rescheduled|shifted|pushed|now)?\s*(?:to|for)\s+(.+)$/i;
+
+function scoreTitle(needle: string, hay: string) {
+  const a = needle.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const b = hay.toLowerCase();
+  if (!a.length) return 0;
+  return a.filter(w => b.includes(w)).length / a.length;
+}
+
+Deno.serve(async (req) => {
+  const raw  = await req.text();
+  const form = new URLSearchParams(raw);
+
+  const sig = req.headers.get('x-twilio-signature') ?? '';
+  if (!await signatureOk(WEBHOOK_URL, form, sig)) {
+    console.log('sms-inbound REJECTED ' + JSON.stringify({
+      hasSignature: !!sig, hasToken: !!TW_TOKEN, requestUrl: req.url }));
+    return new Response('Not found', { status: 404 });   // 404, not 403
+  }
+
+  const from = form.get('From') ?? '';
+  const body = (form.get('Body') ?? '').trim();
+  const db   = admin();
+  console.log('sms-inbound ACCEPTED from ' + from);
+
+  const { data: house } = await db.from('households').select('timezone').eq('id', HOUSEHOLD).single();
+  const tz = house?.timezone || 'America/Chicago';
+  const { data: members } = await db.from('members').select('*')
+    .eq('household_id', HOUSEHOLD).is('deleted_at', null);
+
+  const sender = (members ?? []).find((m: any) => m.phone && norm(m.phone) === norm(from));
+  if (!sender) return twiml("This number isn't on the family list yet. Ask Erich to add it.");
+  if (!body)   return twiml('Send something like: Soccer Thursday 5:30 Bryce');
+
+  // An unanswered question must not still be waiting tomorrow.
+  await db.from('sms_pending').delete().lt('expires_at', new Date().toISOString());
+
+  const { data: pend } = await db.from('sms_pending').select('*')
+    .eq('member_id', sender.id).maybeSingle();
+
+  if (pend) {
+    const answer = String(body).trim().toLowerCase();
+    const opts: any[] = pend.options ?? [];
+    const hit = opts.find((o: any) =>
+      o.keys.some((k: string) => answer === k || answer.startsWith(k + ' ')));
+
+    if (hit) {
+      await db.from('sms_pending').delete().eq('id', pend.id);
+      const pl = pend.payload as any;
+
+      if (pend.kind === 'confirm_date') {
+        if (hit.value === 'cancel') return twiml('Dropped it.');
+        const ev = await createEvent(db, pl.parsed, members ?? [], sender, tz, hit.value);
+        return ev ? twiml(confirmText(pl.parsed, hit.value))
+                  : twiml('Could not save that one. Try again?');
+      }
+
+      if (pend.kind === 'edit_scope') {
+        if (hit.value === 'cancel') return twiml('Left it as it was.');
+        const { data: ev } = await db.from('events').select('*').eq('id', pl.eventId).single();
+        if (!ev) return twiml('That event is gone now.');
+
+        if (hit.value === 'one') {
+          // One occurrence moves via an exception row; the series is untouched.
+          await db.from('event_exceptions').upsert({
+            household_id: HOUSEHOLD, event_id: ev.id,
+            occurrence_date: pl.fromDate, action: 'override',
+            starts_at: pl.allDay ? null : wallToUtc(pl.date, pl.start, tz),
+            created_by: sender.id
+          }, { onConflict: 'event_id,occurrence_date' });
+          return twiml(`Moved just that one.\n${ev.title} — ${pretty(pl.date)}` +
+                       (pl.start ? ` at ${pl.start}` : ''));
+        }
+
+        // 'all' — the series itself changes from here on.
+        const patch: any = { event_date: pl.date };
+        if (!pl.allDay && pl.start) patch.starts_at = wallToUtc(pl.date, pl.start, tz);
+        if (pl.weekday != null && ev.repeat_freq === 'weekly') patch.repeat_days = [pl.weekday];
+        await db.from('events').update(patch).eq('id', ev.id);
+        await db.from('reminders').delete().eq('event_id', ev.id).is('sent_at', null);
+        return twiml(`Updated the whole series.\n${ev.title} — ${pretty(pl.date)}` +
+                     (pl.start ? ` at ${pl.start}` : ''));
+      }
+    }
+    // Not an answer to what we asked. Drop the question rather than let a
+    // stale conversation swallow a new instruction.
+    await db.from('sms_pending').delete().eq('id', pend.id);
+  }
+
+  if (/^(help|\?)$/i.test(body)) {
+    return twiml('Text an event the way you would say it:\n' +
+      '"Soccer Thursday 5:30 Bryce, Jess driving"\n' +
+      '"Dentist tomorrow 9am Addie remind 1 hour before"\n' +
+      '"Piano every Tuesday 4pm Addie"\n' +
+      'To change one: "planning committee moved to Monday at 4"\n' +
+      'Reply STOP to opt out.');
+  }
+
+  const names = (members ?? []).map((m: any) => m.name);
+  const now   = nowInTz(tz);
+
+  // ---- an edit? -----------------------------------------------------------
+  const em = body.match(EDIT_RE);
+  if (em && /\b(mov|chang|reschedul|shift|push|now)\b/i.test(body)) {
+    const needle = em[1].trim();
+    const when   = em[2].trim();
+    const w = parseQuickAdd(when, { members: names, now, defaultLead: null, me: sender.name });
+
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const { data: cands } = await db.from('events').select('*')
+      .eq('household_id', HOUSEHOLD).is('deleted_at', null)
+      .or(`repeat_freq.not.is.null,event_date.gte.${todayStr}`);
+
+    const scored = (cands ?? []).map((e: any) => ({ e, s: scoreTitle(needle, e.title) }))
+      .filter((x: any) => x.s >= 0.5).sort((a: any, b: any) => b.s - a.s);
+
+    if (!scored.length) return twiml(`Could not find anything called "${needle}".`);
+    const target = scored[0].e;
+
+    const payload = { eventId: target.id, date: w.date, start: w.start,
+                      allDay: w.allDay, weekday: new Date(w.date + 'T12:00:00Z').getUTCDay(),
+                      fromDate: target.event_date };
+
+    if (target.repeat_freq) {
+      // THE question. Guessing here rewrites months of a series by accident.
+      await db.from('sms_pending').upsert({
+        household_id: HOUSEHOLD, member_id: sender.id, kind: 'edit_scope',
+        payload,
+        options: [ { keys: ['1','one','just this','this one'], value: 'one' },
+                   { keys: ['2','all','every','series'],      value: 'all' },
+                   { keys: ['cancel','stop','no'],            value: 'cancel' } ],
+        expires_at: new Date(Date.now() + 15*60_000).toISOString()
+      }, { onConflict: 'member_id' });
+
+      return twiml(`${target.title} repeats. Move which?\n` +
+                   `1 = just ${pretty(target.event_date)}\n` +
+                   `2 = the whole series from here`);
+    }
+
+    const patch: any = { event_date: w.date };
+    if (!w.allDay && w.start) patch.starts_at = wallToUtc(w.date, w.start, tz);
+    await db.from('events').update(patch).eq('id', target.id);
+    await db.from('reminders').delete().eq('event_id', target.id).is('sent_at', null);
+    return twiml(`Moved ${target.title} to ${pretty(w.date)}` + (w.start ? ` at ${w.start}` : ''));
+  }
+
+  // ---- otherwise it is a new event ---------------------------------------
+  const p = parseQuickAdd(body, {
+    members: names, defaultLead: sender.default_lead_minutes ?? 30, now, me: sender.name
+  });
+
+  // Naming today's own weekday is ambiguous. Ask rather than guess.
+  if (p.alsoToday) {
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'confirm_date',
+      payload: { parsed: p },
+      options: [ { keys: ['1','today','tonight'], value: p.alsoToday },
+                 { keys: ['2','next','next week'], value: p.date },
+                 { keys: ['cancel','stop','no'],   value: 'cancel' } ],
+      expires_at: new Date(Date.now() + 15*60_000).toISOString()
+    }, { onConflict: 'member_id' });
+
+    return twiml(`${p.title} — which did you mean?\n` +
+                 `1 = today, ${pretty(p.alsoToday)}\n` +
+                 `2 = ${pretty(p.date)}`);
+  }
+
+  const ev = await createEvent(db, p, members ?? [], sender, tz, p.date);
+  if (!ev) return twiml('Could not save that one. Try again?');
+  return twiml(confirmText(p, p.date) + (p.warnings.length ? `\n\n(${p.warnings[0]})` : ''));
+});
