@@ -12,6 +12,12 @@ const pad = n => String(n).padStart(2,'0');
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const EVERYONE = '#9a7b2f';
+/* Role names as a person would say them. Mirrors ROLE_SAY in sms-inbound.ts —
+   the database stores 'dropoff', a parent reading this wants "ride there". */
+const ROLE_SAY = {
+  going: 'going', driving: 'drives both ways', dropoff: 'ride there',
+  pickup: 'ride back', helping: 'helping', optional: 'maybe'
+};
 
 const LEADS = [
   {v:null,  l:'None'},   {v:0,   l:'At time'}, {v:10,  l:'10 min'},
@@ -109,10 +115,14 @@ const DB = {
     // Series rows have no upper date bound, so they must always be fetched —
     // filtering them by date would hide a weekly event from next month's view.
     const { data } = await state.db.from('events')
-      .select('*, reminders(lead_minutes)')
+      .select('*, reminders(lead_minutes), event_people(member_id, role)')
       .eq('household_id', CONFIG.HOUSEHOLD_ID).is('deleted_at', null)
       .or(`repeat_freq.not.is.null,event_date.gte.${ymd(from)},starts_at.gte.${from.toISOString()}`);
-    state.events = (data || []).map(e => ({...e, lead_minutes: e.reminders?.[0]?.lead_minutes ?? null}));
+    state.events = (data || []).map(e => ({
+      ...e,
+      lead_minutes: e.reminders?.[0]?.lead_minutes ?? null,
+      people: (e.event_people || []).map(r => ({ member_id: r.member_id, role: r.role }))
+    }));
 
     const { data: ex } = await state.db.from('event_exceptions').select('*')
       .eq('household_id', CONFIG.HOUSEHOLD_ID);
@@ -163,11 +173,23 @@ const DB = {
      dropped rather than invented. */
   async syncPeople(eventId, people){
     if (state.demo || !eventId) return;
+    /* null/undefined means "this caller has nothing to say about the cast".
+       The event sheet edits time and title and never touches people, so it
+       must not erase them. An explicit [] still means "nobody".
+
+       The delete used to run before this check, which made saving any event
+       from the sheet wipe its cast and every per-person reminder with it. */
+    if (people == null) return;
+
     await state.db.from('event_people').delete().eq('event_id', eventId);
-    if (!people || !people.length) return;
+    if (!people.length) return;
     const rows = [];
     for (const p of people) {
-      const mem = state.members.find(m => m.name === p.name);
+      // Two shapes reach here: {name, role} from the parser, and
+      // {member_id, role} from an event that was read back out of the table.
+      const mem = p.member_id
+        ? state.members.find(m => m.id === p.member_id)
+        : state.members.find(m => m.name === p.name);
       if (!mem) continue;                       // unknown name -> not stored
       rows.push({
         household_id: CONFIG.HOUSEHOLD_ID,
@@ -230,6 +252,19 @@ const DB = {
 const memberOf = id => state.members.find(m => m.id === id) || null;
 const colorOf  = id => memberOf(id)?.color || EVERYONE;
 const nameOf   = id => memberOf(id)?.name  || 'Everyone';
+/* Who is actually on an event. An event with nobody named is attached to
+   nobody and reminds nobody; calling that "Everyone" made an empty cast look
+   like a full one. It now says so. Roles are shown where there is room. */
+function whoOf(e, withRoles = false){
+  const cast = e.people || [];
+  if (!cast.length) return memberOf(e.member_id)?.name || 'No one yet';
+  const all = state.members.length && cast.length === state.members.length;
+  if (all && !withRoles) return 'Everyone';
+  return cast.map(c => {
+    const n = memberOf(c.member_id)?.name || '?';
+    return withRoles && c.role !== 'going' ? `${n} · ${ROLE_SAY[c.role] ?? c.role}` : n;
+  }).join(', ');
+}
 const dateOf   = e  => e.all_day ? e.event_date : ymd(new Date(e.starts_at));
 
 function timeOf(e){
@@ -414,7 +449,7 @@ function render(){
         ${todays.length ? todays.map(e => `
           <button class="trow" data-ev="${e.id}" style="--c:${colorOf(e.member_id)}">
             <span class="ttime">${timeOf(e)}</span>
-            <span class="body"><span class="ttitle">${esc(e.title)}</span><span class="twho">${nameOf(e.member_id)}</span></span>
+            <span class="body"><span class="ttitle">${esc(e.title)}</span><span class="twho">${esc(whoOf(e))}</span></span>
             ${e.lead_minutes != null ? `<span class="bell" title="Reminder ${leadLabel(e.lead_minutes)} before">&#9201;</span>` : ''}
           </button>`).join('')
         : `<div class="empty">Nothing on the calendar today.</div>`}
@@ -448,7 +483,7 @@ function render(){
         ${upcoming.length ? upcoming.map(e => { const d = new Date(dateOf(e)+'T12:00:00');
           return `<button class="up" data-ev="${e.id}">
             <span class="upd"><i>${DOW[d.getDay()]}</i><b>${d.getDate()}</b></span>
-            <span class="body"><span class="upt">${esc(e.title)}</span><span class="upm">${timeOf(e)} · ${nameOf(e.member_id)}</span></span>
+            <span class="body"><span class="upt">${esc(e.title)}</span><span class="upm">${timeOf(e)} · ${esc(whoOf(e))}</span></span>
             <span class="dot" style="background:${colorOf(e.member_id)}"></span>
           </button>`; }).join('')
         : `<div class="empty">Nothing scheduled yet.</div>`}
@@ -473,7 +508,7 @@ const pill = (e) => `<button class="pill" data-occ="${e.id}|${e.occurrence_date}
   <span class="pt">${timeOf(e)}</span>
   <span class="pb"><span class="pn">${esc(e.title)}${e.is_occurrence
       ? `<span class="rep" title="${esc(describeRepeat(e)||'Repeats')}">&#8635;</span>` : ''}</span>
-    <span class="pw">${nameOf(e.member_id)}</span></span>
+    <span class="pw">${esc(whoOf(e))}</span></span>
   ${e.lead_minutes != null ? `<span class="bell">&#9201;</span>` : ''}
 </button>`;
 
@@ -635,30 +670,97 @@ qaIn.addEventListener('input', () => {
 });
 $('#qa-form').addEventListener('submit', e => { e.preventDefault(); preview(); });
 
+/* The clock, said out loud. 12:00 is the number people misread most often,
+   in both directions, so it never appears here without the word. */
+function clockLabel(t){
+  if (!t) return 'All day';
+  const [h, mi] = t.split(':').map(Number);
+  if (h === 12 && mi === 0) return '12:00 PM (noon)';
+  if (h === 0  && mi === 0) return '12:00 AM (midnight)';
+  const ap = h >= 12 ? 'PM' : 'AM', hh = h % 12 === 0 ? 12 : h % 12;
+  return `${hh}:${String(mi).padStart(2,'0')} ${ap}`;
+}
+const dayLabel = d => new Date(d + 'T12:00:00')
+  .toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+
 function preview(){
   const text = qaIn.value.trim(); if (!text) return;
-  const p = parseQuickAdd(text, {
+  state.parsed = parseQuickAdd(text, {
     members: state.members.map(m => m.name),
-    defaultLead: state.me?.default_lead_minutes ?? 30
+    defaultLead: state.me?.default_lead_minutes ?? 30,
+    me: state.me?.name
   });
-  state.parsed = p;
+  renderPreview();
+}
+
+/* Split out from preview() so answering a question can redraw the card
+   without re-parsing the text — re-parsing would just re-raise the same
+   ambiguity and throw the answer away. */
+function renderPreview(){
+  const p = state.parsed; if (!p) return;
   const d = describe(p);
   const mem = state.members.find(m => m.name === p.member);
+
+  /* Anything the parser refused to guess at. The button stays disabled until
+     these are answered, which is the same rule the text number follows —
+     one parser, one standard, whichever door you came in by. */
+  const asks = [];
+  if (p.alsoToday) asks.push({
+    key: 'date',
+    q: 'Which day did you mean?',
+    opts: [ { label: `Today · ${dayLabel(p.alsoToday)}`, val: p.alsoToday },
+            { label: dayLabel(p.date),                   val: p.date } ]
+  });
+  if (p.ambiguousTime) asks.push({
+    key: 'time',
+    q: p.ambiguousTime.kind === 'noon' ? '12:00 — which one?' : 'Morning or evening?',
+    opts: [ { label: clockLabel(p.ambiguousTime.am), val: p.ambiguousTime.am },
+            { label: clockLabel(p.ambiguousTime.pm), val: p.ambiguousTime.pm } ]
+  });
+
+  const castNote = p.needsCast
+    ? 'Nobody on it yet — add names to get reminders to the right phones.'
+    : p.needsRides
+      ? 'No ride noted. Add "Jess there, me back" if someone needs a lift.'
+      : '';
+
+  /* Never the word "Everyone". An event with nobody named is attached to
+     nobody and reminds nobody, and saying "Everyone" hid exactly that. */
+  const who = (p.people ?? []).length
+    ? p.people.map(x => x.role === 'going' ? x.name : `${x.name} · ${ROLE_SAY[x.role] ?? x.role}`).join(', ')
+    : (p.member || 'No one yet');
+
   $('#qa-prev').innerHTML = `
     <div class="qa-prev" style="--c:${mem?.color || EVERYONE}">
       <div class="pt">${esc(p.title)}</div>
       ${p.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
       <div class="meta">
-        <span class="mtag">${d.day}</span><span class="mtag">${d.time}</span>
-        <span class="mtag">${d.who}</span><span class="mtag">&#9201; ${d.lead}</span>
+        <span class="mtag">${d.day}</span><span class="mtag">${p.allDay ? 'All day' : esc(clockLabel(p.start))}</span>
+        <span class="mtag">${esc(who)}</span><span class="mtag">&#9201; ${d.lead}</span>
         ${d.repeat ? `<span class="mtag">&#8635; ${esc(d.repeat)}</span>` : ''}
       </div>
+      ${asks.map((a, i) => `
+        <div class="qa-ask">
+          <div class="aq">${esc(a.q)}</div>
+          <div class="ao">${a.opts.map((o, j) =>
+            `<button type="button" data-ask="${i}" data-opt="${j}">${esc(o.label)}</button>`).join('')}</div>
+        </div>`).join('')}
+      ${castNote ? `<div class="hint">${esc(castNote)}</div>` : ''}
       <div class="acts">
         <button type="button" id="qa-edit">Edit</button>
-        <button type="button" class="ok" id="qa-ok">Add it</button>
+        <button type="button" class="ok" id="qa-ok"${asks.length ? ' disabled' : ''}>${
+          asks.length ? 'Answer above' : 'Add it'}</button>
       </div>
     </div>`;
-  $('#qa-ok').onclick = commitParsed;
+
+  $$('#qa-prev [data-ask]').forEach(btn => btn.onclick = () => {
+    const a = asks[+btn.dataset.ask], o = a.opts[+btn.dataset.opt];
+    if (a.key === 'date') { state.parsed.date = o.val; state.parsed.alsoToday = null; }
+    else                  { state.parsed.start = o.val; state.parsed.ambiguousTime = null; }
+    renderPreview();
+  });
+
+  if (!asks.length) $('#qa-ok').onclick = commitParsed;
   $('#qa-edit').onclick = () => { openSheet(parsedToEvent(p)); clearQA(); };
 }
 

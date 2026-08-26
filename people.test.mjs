@@ -27,7 +27,11 @@ eq('three bare names',   R('Movie Friday 7pm Bryce Addie Jess'), ['Addie:going',
 eq('primary is attendee', P('Soccer Thursday 5:30 Bryce, Jess driving').member, 'Bryce');
 eq('primary lone driver', P('Pick up dry cleaning Friday, Jess driving').member, 'Jess');
 eq('everyone clears it',  P('Family dinner Sunday 6pm everyone').member, null);
-eq('everyone has no cast',P('Family dinner Sunday 6pm everyone').people, []);
+// "everyone" used to clear the cast entirely, which left the event attached to
+// nobody and reminded nobody. It now expands to the real member list.
+eq('everyone expands',    R('Family dinner Sunday 6pm everyone'),
+   ['Addie:going','Bryce:going','Erich:going','Jess:going']);
+eq('everyone needs no rides', P('Family dinner Sunday 6pm everyone').needsRides, false);
 
 // the closed vocabulary is never widened
 eq('unknown verb -> going', R('Soccer Thursday Bryce, Jess yelling'), ['Bryce:going','Jess:going']);

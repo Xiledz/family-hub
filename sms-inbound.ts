@@ -54,9 +54,15 @@ const MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may
  * phrases are matched first, so "is dropping off" beats "dropping".
  * -------------------------------------------------------------------------*/
 const ROLE_WORDS = [
+  /* Order matters — first match wins. The two-leg phrasings run before the
+     catch-all "driving", because "Jess takes her there" is one leg, not both.
+     A parent who only drops off should not be told to plan the trip home. */
+  [/\b(?:both\s+ways|round\s*trip|there\s+and\s+back)\b/i, 'driving'],
+  [/\b(?:is\s+)?(?:taking|takes|driving|drives|dropping|drops|bringing|brings)?\s*(?:him|her|them|us|me)?\s*(?:there|over)\b/i, 'dropoff'],
+  [/\b(?:is\s+)?(?:bringing|brings|getting|gets|picking|picks)?\s*(?:him|her|them|us|me)?\s*back\b|\breturn\s+trip\b/i, 'pickup'],
+  [/\b(?:is\s+)?(?:dropping|drops|drop)(?:\s+(?:him|her|them|us|me))?\s*off\b|\bdrop[- ]?off\b/i, 'dropoff'],
+  [/\b(?:is\s+)?(?:picking|picks|pick)(?:\s+(?:him|her|them|us|me))?\s*up\b|\bpick[- ]?up\b|\b(?:is\s+)?(?:collecting|collects|grabbing|grabs)(?:\s+(?:him|her|them|us|me))?\b/i, 'pickup'],
   [/\b(?:is\s+)?(?:driving|drives|driver|taking|takes|has|got)(?:\s+(?:him|her|them|us|me))?\b/i, 'driving'],
-  [/\b(?:is\s+)?(?:dropping|drops|drop)(?:\s+(?:him|her|them|us|me))?\s*off\b|\bdropoff\b/i, 'dropoff'],
-  [/\b(?:is\s+)?(?:picking|picks|pick)(?:\s+(?:him|her|them|us|me))?\s*up\b|\bpickup\b|\b(?:is\s+)?(?:collecting|collects|grabbing|grabs)(?:\s+(?:him|her|them|us|me))?\b/i, 'pickup'],
   [/\b(?:is\s+)?(?:helping|helps|volunteering|volunteers|chaperoning|chaperones)\b/i, 'helping'],
   [/\b(?:is\s+)?(?:maybe|might|optional|if\s+free)\b/i, 'optional'],
   [/\b(?:is\s+)?(?:going|attending|attends|coming|comes)\b/i, 'going'],
@@ -82,7 +88,8 @@ function parseQuickAdd(input, opts = {}) {
   const out = {
     title: '', date: null, start: null, end: null, allDay: false,
     member: null, leadMinutes: opts.defaultLead ?? 30,
-    repeat: null, people: [], alsoToday: null, warnings: [], matched: []
+    repeat: null, people: [], alsoToday: null, ambiguousTime: null,
+    needsCast: false, needsRides: false, warnings: [], matched: []
   };
   if (!raw) { out.warnings.push('Nothing to add'); return out; }
 
@@ -275,25 +282,69 @@ function parseQuickAdd(input, opts = {}) {
   }
 
   // ---- 7. single time ---------------------------------------------------
+  /* Time is where a quiet error does the most damage. A date that is wrong
+     looks wrong; a time that is twelve hours off looks perfectly reasonable
+     in the confirmation, right up until somebody misses the thing.
+
+     So this section guesses less than it used to, and says so when it cannot.
+       - "noon" and "midnight" are words, and words are not ambiguous.
+       - A bare 12 IS ambiguous, and famously so: plenty of people read 12:00
+         as midnight and plenty read it as noon. It is never guessed.
+       - A bare 7 through 11 could be either end of the day. Not guessed.
+       - A bare 1 through 6 keeps the waking-hours default. "Soccer at 5"
+         meaning five in the morning is not a thing.
+     Anything left unresolved is handed up as out.ambiguousTime so the caller
+     can ask. A guess is still stored as out.start so the event is never
+     empty, but the flag says plainly that it was a guess. */
+  const AM_CUE = /\b(?:morning|breakfast|sunrise|before\s+school|before\s+work)\b/i;
+  const PM_CUE = /\b(?:evening|tonight|afternoon|dinner|supper|night|after\s+school|after\s+work)\b/i;
+  /* Deliberately NOT cues: bare "am" and "pm". "I am driving Addie at 7"
+     contains "am" and means nothing of the sort. Where am/pm genuinely
+     qualifies a number, the explicit branch below has already caught it. */
+  const cueAm = AM_CUE.test(raw), cuePm = PM_CUE.test(raw);
+
+  const setBare = (h, mi) => {
+    if (h === 12) {
+      if (cueAm) { out.start = `00:${pad(mi)}`; return; }
+      if (cuePm) { out.start = `12:${pad(mi)}`; return; }
+      out.start = `12:${pad(mi)}`;
+      out.ambiguousTime = { kind: 'noon', am: `00:${pad(mi)}`, pm: `12:${pad(mi)}` };
+      return;
+    }
+    if (h >= 1 && h <= 6) {
+      out.start = cueAm ? `${pad(h)}:${pad(mi)}` : `${pad(h + 12)}:${pad(mi)}`;
+      return;
+    }
+    if (h >= 7 && h <= 11) {
+      if (cueAm) { out.start = `${pad(h)}:${pad(mi)}`; return; }
+      if (cuePm) { out.start = `${pad(h + 12)}:${pad(mi)}`; return; }
+      /* Both readings are real, so this is only a placeholder until the
+         question comes back answered. It leans the way the hour usually
+         falls: 7 and 8 are evening activities, 9 through 11 are morning
+         appointments. */
+      out.start = h <= 8 ? `${pad(h + 12)}:${pad(mi)}` : `${pad(h)}:${pad(mi)}`;
+      out.ambiguousTime = { kind: 'ampm', am: `${pad(h)}:${pad(mi)}`, pm: `${pad(h + 12)}:${pad(mi)}` };
+      return;
+    }
+    out.start = `${pad(h)}:${pad(mi)}`;               // 0, or 13-23: 24h clock
+  };
+
   if (!out.start) {
-    if ((m = find(/\bnoon\b/i)))          { out.start = '12:00'; take(m,'time'); }
-    else if ((m = find(/\bmidnight\b/i))) { out.start = '00:00'; take(m,'time'); }
+    if ((m = findFree(/\b(?:12\s*)?noon\b/i)))          { out.start = '12:00'; take(m,'time'); }
+    else if ((m = findFree(/\b(?:12\s*)?midnight\b/i))) { out.start = '00:00'; take(m,'time'); }
     else if ((m = findFree(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i))) {
       out.start = hm(+m[1], m[2]?+m[2]:0, m[3]); take(m,'time');
     }
     else if ((m = findFree(/\bat\s+(\d{1,2})(?!\s*[:\d])\b/i))) {
       // "at 4" — the preposition is what makes this a time and not a quantity.
-      let h = +m[1];
-      if (h >= 1 && h <= 6) h += 12;                 // waking hours
-      out.start = `${pad(h)}:00`; take(m,'time');
+      setBare(+m[1], 0); take(m,'time');
     }
     else if ((m = findFree(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/))) {
-      // bare "5:30" — assume waking hours, so 1:00-6:59 means PM
-      let h = +m[1]; const mi = +m[2];
-      if (h >= 1 && h <= 6) h += 12;
-      out.start = `${pad(h)}:${pad(mi)}`; take(m,'time');
+      setBare(+m[1], +m[2]); take(m,'time');
     }
   }
+  // An all-day event has no clock, so there is nothing to be ambiguous about.
+  if (out.allDay || !out.start) out.ambiguousTime = null;
 
   // ---- 8. duration: "for 90 minutes", "for 2 hours" ---------------------
   if (out.start && !out.end && (m = find(/\bfor\s+(\d+(?:\.\d+)?)\s*(min|mins|minute|minutes|hr|hrs|hour|hours)\b/i))) {
@@ -313,7 +364,12 @@ function parseQuickAdd(input, opts = {}) {
      Every name is resolved against the real member list, so nothing enters
      the system as free text, and every role lands on the closed vocabulary
      or is dropped. Roles are never invented from unrecognised words. */
-  if ((m = find(/\b(?:everyone|everybody|all of us|the family|whole family)\b/i))) {
+  if ((m = findFree(/\b(?:everyone|everybody|all of us|the family|whole family)\b/i))) {
+    /* "Everyone" is an explicit cast, not the absence of one. Expand it to the
+       real member list so the event carries actual names. Otherwise nobody is
+       attached, nobody gets a reminder, and the calendar shows an event that
+       belongs to no one. */
+    out.people = members.map(name => ({ name, role: 'going' }));
     out.member = null; out.matched.push('member'); take(m, 'member');
   } else {
     // 10a. Every mention of every known member, with its position. Longest
@@ -387,11 +443,18 @@ function parseQuickAdd(input, opts = {}) {
     const going = out.people.find(x => x.role === 'going');
     out.member = going ? going.name : (out.people[0] ? out.people[0].name : null);
     if (out.people.length) out.matched.push('member');
-
-    if (out.people.length > 1 && !out.people.some(x => x.role !== 'going')) {
-      out.warnings.push('Several people, no roles given — everyone marked as going.');
-    }
   }
+
+  /* Two open questions, recorded rather than guessed at: who is actually
+     coming, and how they get there and back. Neither one blocks saving — an
+     event with no cast is still a real event — but both are worth asking
+     about once, in a single follow-up, rather than never. */
+  out.needsCast  = out.people.length === 0;
+  const wholeFamily = members.length > 0 && out.people.length === members.length;
+  const onlyMe      = out.people.length === 1 && out.people[0].name === opts.me;
+  out.needsRides = out.people.length > 0 && !wholeFamily && !onlyMe &&
+                   !out.people.some(x => x.role === 'driving' ||
+                                         x.role === 'dropoff' || x.role === 'pickup');
 
   // ---- 11. whatever is left is the title --------------------------------
   out.title = strip(raw, spans);
@@ -597,14 +660,174 @@ async function createEvent(db: any, p: any, members: any[], sender: any, tz: str
   return ev;
 }
 
-function confirmText(p: any, date: string) {
+/* ---------------------------------------------------------------------------
+ * SAYING THE TIME OUT LOUD
+ *
+ * "6:00" is not an answer to "when". Noon and midnight are the two most
+ * reliably misread numbers on a clock, and a twelve-hour error is the kind
+ * that reads as perfectly correct right up until somebody misses the thing.
+ * So every time this number quotes a clock back at you, it names which half
+ * of the day it means.
+ * -------------------------------------------------------------------------*/
+function clock(t: string | null) {
+  if (!t) return 'All day';
+  const [h, mi] = t.split(':').map(Number);
+  if (h === 12 && mi === 0) return '12:00 PM (noon)';
+  if (h === 0  && mi === 0) return '12:00 AM (midnight)';
+  const ap = h >= 12 ? 'PM' : 'AM';
+  const hh = h % 12 === 0 ? 12 : h % 12;
+  const part = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+  return `${hh}:${String(mi).padStart(2, '0')} ${ap} (${part})`;
+}
+
+/* Role names as a person would say them. The database stores 'dropoff'; a
+   parent reading a text at a red light wants "ride there". */
+const ROLE_SAY: Record<string, string> = {
+  going:   'going',
+  driving: 'drives both ways',
+  dropoff: 'ride there',
+  pickup:  'ride back',
+  helping: 'helping',
+  optional:'maybe',
+};
+
+function castLine(people: any[]) {
+  if (!people?.length) return 'Nobody on it yet';
+  return people.map((x: any) => `${x.name} — ${ROLE_SAY[x.role] ?? x.role}`).join('\n');
+}
+
+function confirmText(p: any, date: string, verb = 'Added') {
   const d = describe({ ...p, date });
-  const cast = (p.people ?? []).length
-    ? (p.people as any[]).map(x => x.role === 'going' ? x.name : `${x.name} (${x.role})`).join(', ')
-    : 'Everyone';
-  return `Added: ${p.title}\n${pretty(date)} · ${d.time}` +
+  return `${verb}: ${p.title}\n${pretty(date)} · ${p.allDay ? 'All day' : clock(p.start)}` +
          (d.repeat ? `\n${d.repeat}` : '') +
-         `\n${cast}\n${d.lead}`;
+         `\n${castLine(p.people)}\n${d.lead}`;
+}
+
+/* The follow-up, and deliberately not a blocking question. The event is
+   already saved; ignoring this costs nothing. Asking who is coming and who
+   covers each leg is worth one line. Making somebody answer before their
+   event is allowed to exist is not. */
+function nudge(p: any) {
+  if (p.needsCast)  return '\n\nWho’s going? Reply: "Addie going, Jess there, me back"';
+  if (p.needsRides) return '\n\nRides? Reply: "Jess there, me back" — or ignore this.';
+  return '';
+}
+
+/* Remember what this person last touched, so their next message can correct
+   it without naming it again. One row per person; the newest wins. */
+async function remember(db: any, sender: any, eventId: string, date: string, action: string) {
+  await db.from('sms_last_action').upsert({
+    member_id: sender.id, household_id: HOUSEHOLD,
+    event_id: eventId, occurrence_date: date, action,
+    created_at: new Date().toISOString()
+  }, { onConflict: 'member_id' });
+}
+
+function askTime(title: string, a: any) {
+  return a.kind === 'noon'
+    ? `${title} — 12:00 which one?\n1 = noon (12:00 PM)\n2 = midnight (12:00 AM)`
+    : `${title} — morning or evening?\n1 = ${clock(a.am)}\n2 = ${clock(a.pm)}`;
+}
+
+function timeOptions(a: any) {
+  return a.kind === 'noon'
+    ? [ { keys: ['1','noon','12pm','pm','midday','afternoon'], value: a.pm },
+        { keys: ['2','midnight','12am','am','night'],          value: a.am },
+        { keys: ['cancel','stop','no'],                        value: 'cancel' } ]
+    : [ { keys: ['1','am','morning'],                          value: a.am },
+        { keys: ['2','pm','evening','afternoon','night'],      value: a.pm },
+        { keys: ['cancel','stop','no'],                        value: 'cancel' } ];
+}
+
+/* A new event can have more than one thing wrong with it at once — an
+   ambiguous weekday AND an ambiguous clock. This runs again after every
+   answer instead of assuming a single round trip. */
+async function advance(db: any, p: any, date: string, members: any[], sender: any, tz: string) {
+  if (p.ambiguousTime) {
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'confirm_time',
+      payload: { mode: 'create', parsed: p, date },
+      options: timeOptions(p.ambiguousTime),
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    return twiml(askTime(p.title, p.ambiguousTime));
+  }
+
+  const ev = await createEvent(db, p, members, sender, tz, date);
+  if (!ev) return twiml('Could not save that one. Try again?');
+  await remember(db, sender, ev.id, date, 'create');
+  return twiml(confirmText(p, date) + nudge(p) +
+               (p.warnings.length ? `\n\n(${p.warnings[0]})` : ''));
+}
+
+/* The clock reading of an instant, in the household's own timezone. Needed
+   when a correction moves the day but leaves the time alone. */
+function utcToWall(iso: string, tz: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', hour: '2-digit', minute: '2-digit'
+  }).formatToParts(new Date(iso));
+  const g = (t: string) => parts.find(x => x.type === t)!.value;
+  return `${g('hour')}:${g('minute')}`;
+}
+
+/* ---------------------------------------------------------------------------
+ * CORRECTING WHAT YOU JUST SENT
+ *
+ * Nobody composes a text and then proofreads it. They send it, read the
+ * confirmation back, and go "no, four". So the last thing each person touched
+ * stays correctable by their next message, with no need to name it again.
+ * -------------------------------------------------------------------------*/
+const FIX_PREFIX = /^(?:no+|nope|actually|wait|sorry|oops|whoops|correction|scratch that|nvm|nevermind|never mind)\b[\s,.:;!-]*/i;
+const FIX_VERB   = /^(?:make (?:it|that)|change (?:it|that)(?:\s+to)?|change to|move (?:it|that) to|set (?:it|that) to|it'?s|its)\b[\s,:-]*/i;
+const KILL       = /^(?:delete|cancel|remove|undo|drop|forget)\s*(?:that|it|the last one|last one|last)?[\s.!]*$/i;
+
+async function applyFix(db: any, ev: any, w: any, members: any[], sender: any, tz: string) {
+  if (w.ambiguousTime) {
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'confirm_time',
+      payload: { mode: 'fix', eventId: ev.id, w },
+      options: timeOptions(w.ambiguousTime),
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    return twiml(askTime(ev.title, w.ambiguousTime));
+  }
+
+  const movedDate = w.matched.includes('date');
+  const movedTime = w.matched.includes('time');
+  const date  = movedDate ? w.date : ev.event_date;
+  const patch: any = {};
+  if (movedDate) patch.event_date = date;
+  if (movedTime) { patch.starts_at = wallToUtc(date, w.start, tz); patch.all_day = false; }
+  else if (movedDate && !ev.all_day && ev.starts_at) {
+    // The day moved and the clock did not. Recompute the instant on the new
+    // day rather than dragging the old UTC value across a DST boundary.
+    patch.starts_at = wallToUtc(date, utcToWall(ev.starts_at, tz), tz);
+  }
+  if (w.matched.includes('lead')) patch.reminder_lead_minutes = w.leadMinutes;
+  if (Object.keys(patch).length) await db.from('events').update(patch).eq('id', ev.id);
+
+  // Merge the cast by name: a correction naming one person must not silently
+  // drop everybody else off the event.
+  const { data: existing } = await db.from('event_people')
+    .select('member_id, role').eq('event_id', ev.id);
+  const byName = new Map<string, any>();
+  for (const r of existing ?? []) {
+    const mem = members.find((m: any) => m.id === r.member_id);
+    if (mem) byName.set(mem.name, { name: mem.name, role: r.role });
+  }
+  for (const p of w.people ?? []) byName.set(p.name, p);
+  const merged = [...byName.values()];
+
+  const evNow = { ...ev, ...patch };
+  await writeCastAndReminders(db, evNow, merged, members,
+    evNow.reminder_lead_minutes, tz, !!ev.repeat_freq);
+  await remember(db, sender, ev.id, date, 'edit');
+
+  const shown = { title: ev.title, allDay: evNow.all_day,
+                  start: evNow.all_day ? null : utcToWall(evNow.starts_at, tz),
+                  people: merged, repeat: null,
+                  leadMinutes: evNow.reminder_lead_minutes };
+  return twiml(confirmText(shown, date, 'Updated'));
 }
 
 /* ---------------------------------------------------------------------------
@@ -665,9 +888,21 @@ Deno.serve(async (req) => {
 
       if (pend.kind === 'confirm_date') {
         if (hit.value === 'cancel') return twiml('Dropped it.');
-        const ev = await createEvent(db, pl.parsed, members ?? [], sender, tz, hit.value);
-        return ev ? twiml(confirmText(pl.parsed, hit.value))
-                  : twiml('Could not save that one. Try again?');
+        // The day is settled. The clock may still be an open question.
+        return await advance(db, pl.parsed, hit.value, members ?? [], sender, tz);
+      }
+
+      if (pend.kind === 'confirm_time') {
+        if (hit.value === 'cancel') return twiml('Dropped it.');
+        if (pl.mode === 'create') {
+          return await advance(db, { ...pl.parsed, start: hit.value, ambiguousTime: null },
+                               pl.date, members ?? [], sender, tz);
+        }
+        const { data: fev } = await db.from('events').select('*')
+          .eq('id', pl.eventId).is('deleted_at', null).maybeSingle();
+        if (!fev) return twiml('That one is already gone.');
+        return await applyFix(db, fev, { ...pl.w, start: hit.value, ambiguousTime: null },
+                              members ?? [], sender, tz);
       }
 
       if (pend.kind === 'edit_scope') {
@@ -683,8 +918,9 @@ Deno.serve(async (req) => {
             starts_at: pl.allDay ? null : wallToUtc(pl.date, pl.start, tz),
             created_by: sender.id
           }, { onConflict: 'event_id,occurrence_date' });
-          return twiml(`Moved just that one.\n${ev.title} — ${pretty(pl.date)}` +
-                       (pl.start ? ` at ${pl.start}` : ''));
+          await remember(db, sender, ev.id, pl.date, 'edit');
+          return twiml(`Moved just that one.\n${ev.title}\n${pretty(pl.date)}` +
+                       (pl.start ? ` · ${clock(pl.start)}` : ''));
         }
 
         // 'all' — the series itself changes from here on.
@@ -693,8 +929,9 @@ Deno.serve(async (req) => {
         if (pl.weekday != null && ev.repeat_freq === 'weekly') patch.repeat_days = [pl.weekday];
         await db.from('events').update(patch).eq('id', ev.id);
         await db.from('reminders').delete().eq('event_id', ev.id).is('sent_at', null);
-        return twiml(`Updated the whole series.\n${ev.title} — ${pretty(pl.date)}` +
-                     (pl.start ? ` at ${pl.start}` : ''));
+        await remember(db, sender, ev.id, pl.date, 'edit');
+        return twiml(`Updated the whole series.\n${ev.title}\n${pretty(pl.date)}` +
+                     (pl.start ? ` · ${clock(pl.start)}` : ''));
       }
     }
     // Not an answer to what we asked. Drop the question rather than let a
@@ -708,11 +945,93 @@ Deno.serve(async (req) => {
       '"Dentist tomorrow 9am Addie remind 1 hour before"\n' +
       '"Piano every Tuesday 4pm Addie"\n' +
       'To change one: "planning committee moved to Monday at 4"\n' +
+      'Just sent it wrong? "no, make it 4pm" or "delete that"\n' +
       'Reply STOP to opt out.');
   }
 
   const names = (members ?? []).map((m: any) => m.name);
   const now   = nowInTz(tz);
+
+  /* ---- a correction to whatever just happened? ---------------------------
+     This runs before the edit matcher on purpose. "no, make it 4" names no
+     event, so the edit matcher would either miss it or, worse, match some
+     unrelated event on the word "make". */
+  {
+    const pre   = body.match(FIX_PREFIX);
+    let   rest  = pre ? body.slice(pre[0].length).trim() : body;
+    const verb  = rest.match(FIX_VERB);
+    if (verb) rest = rest.slice(verb[0].length).trim();
+
+    const wantsKill = KILL.test(rest) || KILL.test(body);
+    const w = rest ? parseQuickAdd(rest, {
+      members: names, now, defaultLead: null, me: sender.name }) : null;
+
+    /* A bare list of people — "Addie going, Jess there, me back" — is the
+       answer to the follow-up question, and is safe to read as a correction
+       because a real new event always carries a title of its own. */
+    const castOnly = !!w && w.people.length > 0 &&
+                     !w.matched.includes('date') && !w.matched.includes('time');
+    const changed  = !!w && (w.matched.includes('date') || w.matched.includes('time') ||
+                             w.matched.includes('lead') || w.people.length > 0);
+    const isFix    = wantsKill || castOnly || ((!!pre || !!verb) && changed);
+
+    if (isFix) {
+      const { data: la } = await db.from('sms_last_action').select('*')
+        .eq('member_id', sender.id).maybeSingle();
+      if (!la?.event_id) {
+        return twiml("Nothing recent of yours to change. Name the event and I'll find it.");
+      }
+      const { data: ev } = await db.from('events').select('*')
+        .eq('id', la.event_id).is('deleted_at', null).maybeSingle();
+      if (!ev) return twiml('That one is already gone.');
+
+      if (wantsKill) {
+        /* Soft delete. Everything else in this app treats deleted_at as gone,
+           and a text sent by mistake should not be able to destroy a row. */
+        await db.from('events').update({ deleted_at: new Date().toISOString() })
+          .eq('id', ev.id);
+        await db.from('reminders').delete().eq('event_id', ev.id).is('sent_at', null);
+        await db.from('sms_last_action').delete().eq('member_id', sender.id);
+        return twiml(`Removed ${ev.title}.`);
+      }
+
+      return await applyFix(db, ev, w, members ?? [], sender, tz);
+    }
+  }
+
+  /* ---- delete something by name -----------------------------------------
+     Without this, "cancel soccer" falls through to the new-event path and
+     cheerfully creates an event called "cancel soccer". A series is never
+     removed on a single word: wiping months of a repeating event by accident
+     is exactly the kind of mistake that has no undo worth the name. */
+  {
+    const dm = body.match(/^(?:delete|cancel|remove|drop)\s+(?:the\s+)?(all\s+|every\s+)?(.+?)[\s.!]*$/i);
+    if (dm) {
+      const wantsAll = !!dm[1];
+      const needle   = dm[2].trim();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+      const { data: cands } = await db.from('events').select('*')
+        .eq('household_id', HOUSEHOLD).is('deleted_at', null)
+        .or(`repeat_freq.not.is.null,event_date.gte.${todayStr}`);
+      const scored = (cands ?? []).map((e: any) => ({ e, s: scoreTitle(needle, e.title) }))
+        .filter((x: any) => x.s >= 0.5).sort((a: any, b: any) => b.s - a.s);
+
+      if (scored.length) {
+        const target = scored[0].e;
+        if (target.repeat_freq && !wantsAll) {
+          return twiml(`${target.title} repeats.\n` +
+                       `Text "delete all ${target.title}" to remove the whole series.`);
+        }
+        await db.from('events').update({ deleted_at: new Date().toISOString() })
+          .eq('id', target.id);
+        await db.from('reminders').delete().eq('event_id', target.id).is('sent_at', null);
+        await db.from('sms_last_action').delete().eq('member_id', sender.id);
+        return twiml(`Removed ${target.title}.`);
+      }
+      // Nothing matched. Fall through — it may well be a real event title
+      // that simply starts with one of those words.
+    }
+  }
 
   // ---- an edit? -----------------------------------------------------------
   const em = body.match(EDIT_RE);
@@ -756,7 +1075,8 @@ Deno.serve(async (req) => {
     if (!w.allDay && w.start) patch.starts_at = wallToUtc(w.date, w.start, tz);
     await db.from('events').update(patch).eq('id', target.id);
     await db.from('reminders').delete().eq('event_id', target.id).is('sent_at', null);
-    return twiml(`Moved ${target.title} to ${pretty(w.date)}` + (w.start ? ` at ${w.start}` : ''));
+    await remember(db, sender, target.id, w.date, 'edit');
+    return twiml(`Moved ${target.title}\n${pretty(w.date)}` + (w.start ? ` · ${clock(w.start)}` : ''));
   }
 
   // ---- otherwise it is a new event ---------------------------------------
@@ -780,7 +1100,5 @@ Deno.serve(async (req) => {
                  `2 = ${pretty(p.date)}`);
   }
 
-  const ev = await createEvent(db, p, members ?? [], sender, tz, p.date);
-  if (!ev) return twiml('Could not save that one. Try again?');
-  return twiml(confirmText(p, p.date) + (p.warnings.length ? `\n\n(${p.warnings[0]})` : ''));
+  return await advance(db, p, p.date, members ?? [], sender, tz);
 });

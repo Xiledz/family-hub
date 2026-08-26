@@ -27,9 +27,15 @@ const MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may
  * phrases are matched first, so "is dropping off" beats "dropping".
  * -------------------------------------------------------------------------*/
 const ROLE_WORDS = [
+  /* Order matters — first match wins. The two-leg phrasings run before the
+     catch-all "driving", because "Jess takes her there" is one leg, not both.
+     A parent who only drops off should not be told to plan the trip home. */
+  [/\b(?:both\s+ways|round\s*trip|there\s+and\s+back)\b/i, 'driving'],
+  [/\b(?:is\s+)?(?:taking|takes|driving|drives|dropping|drops|bringing|brings)?\s*(?:him|her|them|us|me)?\s*(?:there|over)\b/i, 'dropoff'],
+  [/\b(?:is\s+)?(?:bringing|brings|getting|gets|picking|picks)?\s*(?:him|her|them|us|me)?\s*back\b|\breturn\s+trip\b/i, 'pickup'],
+  [/\b(?:is\s+)?(?:dropping|drops|drop)(?:\s+(?:him|her|them|us|me))?\s*off\b|\bdrop[- ]?off\b/i, 'dropoff'],
+  [/\b(?:is\s+)?(?:picking|picks|pick)(?:\s+(?:him|her|them|us|me))?\s*up\b|\bpick[- ]?up\b|\b(?:is\s+)?(?:collecting|collects|grabbing|grabs)(?:\s+(?:him|her|them|us|me))?\b/i, 'pickup'],
   [/\b(?:is\s+)?(?:driving|drives|driver|taking|takes|has|got)(?:\s+(?:him|her|them|us|me))?\b/i, 'driving'],
-  [/\b(?:is\s+)?(?:dropping|drops|drop)(?:\s+(?:him|her|them|us|me))?\s*off\b|\bdropoff\b/i, 'dropoff'],
-  [/\b(?:is\s+)?(?:picking|picks|pick)(?:\s+(?:him|her|them|us|me))?\s*up\b|\bpickup\b|\b(?:is\s+)?(?:collecting|collects|grabbing|grabs)(?:\s+(?:him|her|them|us|me))?\b/i, 'pickup'],
   [/\b(?:is\s+)?(?:helping|helps|volunteering|volunteers|chaperoning|chaperones)\b/i, 'helping'],
   [/\b(?:is\s+)?(?:maybe|might|optional|if\s+free)\b/i, 'optional'],
   [/\b(?:is\s+)?(?:going|attending|attends|coming|comes)\b/i, 'going'],
@@ -55,7 +61,8 @@ export function parseQuickAdd(input, opts = {}) {
   const out = {
     title: '', date: null, start: null, end: null, allDay: false,
     member: null, leadMinutes: opts.defaultLead ?? 30,
-    repeat: null, people: [], alsoToday: null, warnings: [], matched: []
+    repeat: null, people: [], alsoToday: null, ambiguousTime: null,
+    needsCast: false, needsRides: false, warnings: [], matched: []
   };
   if (!raw) { out.warnings.push('Nothing to add'); return out; }
 
@@ -248,25 +255,69 @@ export function parseQuickAdd(input, opts = {}) {
   }
 
   // ---- 7. single time ---------------------------------------------------
+  /* Time is where a quiet error does the most damage. A date that is wrong
+     looks wrong; a time that is twelve hours off looks perfectly reasonable
+     in the confirmation, right up until somebody misses the thing.
+
+     So this section guesses less than it used to, and says so when it cannot.
+       - "noon" and "midnight" are words, and words are not ambiguous.
+       - A bare 12 IS ambiguous, and famously so: plenty of people read 12:00
+         as midnight and plenty read it as noon. It is never guessed.
+       - A bare 7 through 11 could be either end of the day. Not guessed.
+       - A bare 1 through 6 keeps the waking-hours default. "Soccer at 5"
+         meaning five in the morning is not a thing.
+     Anything left unresolved is handed up as out.ambiguousTime so the caller
+     can ask. A guess is still stored as out.start so the event is never
+     empty, but the flag says plainly that it was a guess. */
+  const AM_CUE = /\b(?:morning|breakfast|sunrise|before\s+school|before\s+work)\b/i;
+  const PM_CUE = /\b(?:evening|tonight|afternoon|dinner|supper|night|after\s+school|after\s+work)\b/i;
+  /* Deliberately NOT cues: bare "am" and "pm". "I am driving Addie at 7"
+     contains "am" and means nothing of the sort. Where am/pm genuinely
+     qualifies a number, the explicit branch below has already caught it. */
+  const cueAm = AM_CUE.test(raw), cuePm = PM_CUE.test(raw);
+
+  const setBare = (h, mi) => {
+    if (h === 12) {
+      if (cueAm) { out.start = `00:${pad(mi)}`; return; }
+      if (cuePm) { out.start = `12:${pad(mi)}`; return; }
+      out.start = `12:${pad(mi)}`;
+      out.ambiguousTime = { kind: 'noon', am: `00:${pad(mi)}`, pm: `12:${pad(mi)}` };
+      return;
+    }
+    if (h >= 1 && h <= 6) {
+      out.start = cueAm ? `${pad(h)}:${pad(mi)}` : `${pad(h + 12)}:${pad(mi)}`;
+      return;
+    }
+    if (h >= 7 && h <= 11) {
+      if (cueAm) { out.start = `${pad(h)}:${pad(mi)}`; return; }
+      if (cuePm) { out.start = `${pad(h + 12)}:${pad(mi)}`; return; }
+      /* Both readings are real, so this is only a placeholder until the
+         question comes back answered. It leans the way the hour usually
+         falls: 7 and 8 are evening activities, 9 through 11 are morning
+         appointments. */
+      out.start = h <= 8 ? `${pad(h + 12)}:${pad(mi)}` : `${pad(h)}:${pad(mi)}`;
+      out.ambiguousTime = { kind: 'ampm', am: `${pad(h)}:${pad(mi)}`, pm: `${pad(h + 12)}:${pad(mi)}` };
+      return;
+    }
+    out.start = `${pad(h)}:${pad(mi)}`;               // 0, or 13-23: 24h clock
+  };
+
   if (!out.start) {
-    if ((m = find(/\bnoon\b/i)))          { out.start = '12:00'; take(m,'time'); }
-    else if ((m = find(/\bmidnight\b/i))) { out.start = '00:00'; take(m,'time'); }
+    if ((m = findFree(/\b(?:12\s*)?noon\b/i)))          { out.start = '12:00'; take(m,'time'); }
+    else if ((m = findFree(/\b(?:12\s*)?midnight\b/i))) { out.start = '00:00'; take(m,'time'); }
     else if ((m = findFree(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i))) {
       out.start = hm(+m[1], m[2]?+m[2]:0, m[3]); take(m,'time');
     }
     else if ((m = findFree(/\bat\s+(\d{1,2})(?!\s*[:\d])\b/i))) {
       // "at 4" — the preposition is what makes this a time and not a quantity.
-      let h = +m[1];
-      if (h >= 1 && h <= 6) h += 12;                 // waking hours
-      out.start = `${pad(h)}:00`; take(m,'time');
+      setBare(+m[1], 0); take(m,'time');
     }
     else if ((m = findFree(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/))) {
-      // bare "5:30" — assume waking hours, so 1:00-6:59 means PM
-      let h = +m[1]; const mi = +m[2];
-      if (h >= 1 && h <= 6) h += 12;
-      out.start = `${pad(h)}:${pad(mi)}`; take(m,'time');
+      setBare(+m[1], +m[2]); take(m,'time');
     }
   }
+  // An all-day event has no clock, so there is nothing to be ambiguous about.
+  if (out.allDay || !out.start) out.ambiguousTime = null;
 
   // ---- 8. duration: "for 90 minutes", "for 2 hours" ---------------------
   if (out.start && !out.end && (m = find(/\bfor\s+(\d+(?:\.\d+)?)\s*(min|mins|minute|minutes|hr|hrs|hour|hours)\b/i))) {
@@ -286,7 +337,12 @@ export function parseQuickAdd(input, opts = {}) {
      Every name is resolved against the real member list, so nothing enters
      the system as free text, and every role lands on the closed vocabulary
      or is dropped. Roles are never invented from unrecognised words. */
-  if ((m = find(/\b(?:everyone|everybody|all of us|the family|whole family)\b/i))) {
+  if ((m = findFree(/\b(?:everyone|everybody|all of us|the family|whole family)\b/i))) {
+    /* "Everyone" is an explicit cast, not the absence of one. Expand it to the
+       real member list so the event carries actual names. Otherwise nobody is
+       attached, nobody gets a reminder, and the calendar shows an event that
+       belongs to no one. */
+    out.people = members.map(name => ({ name, role: 'going' }));
     out.member = null; out.matched.push('member'); take(m, 'member');
   } else {
     // 10a. Every mention of every known member, with its position. Longest
@@ -360,11 +416,18 @@ export function parseQuickAdd(input, opts = {}) {
     const going = out.people.find(x => x.role === 'going');
     out.member = going ? going.name : (out.people[0] ? out.people[0].name : null);
     if (out.people.length) out.matched.push('member');
-
-    if (out.people.length > 1 && !out.people.some(x => x.role !== 'going')) {
-      out.warnings.push('Several people, no roles given — everyone marked as going.');
-    }
   }
+
+  /* Two open questions, recorded rather than guessed at: who is actually
+     coming, and how they get there and back. Neither one blocks saving — an
+     event with no cast is still a real event — but both are worth asking
+     about once, in a single follow-up, rather than never. */
+  out.needsCast  = out.people.length === 0;
+  const wholeFamily = members.length > 0 && out.people.length === members.length;
+  const onlyMe      = out.people.length === 1 && out.people[0].name === opts.me;
+  out.needsRides = out.people.length > 0 && !wholeFamily && !onlyMe &&
+                   !out.people.some(x => x.role === 'driving' ||
+                                         x.role === 'dropoff' || x.role === 'pickup');
 
   // ---- 11. whatever is left is the title --------------------------------
   out.title = strip(raw, spans);
