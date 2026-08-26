@@ -573,6 +573,11 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Twilio signs the EXACT url configured in its console. Rebuilding it from
    request headers does not work: inside the edge runtime the path is
    "/sms-inbound", not "/functions/v1/sms-inbound". */
+/* Bumped by hand on every deploy. Text "help" to read it back. Without this
+   there is no way to tell a deployed build from an editor draft, and we lost
+   an hour to exactly that. */
+const BUILD = '2026-08-26a';
+
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
 async function signatureOk(url: string, params: URLSearchParams, given: string) {
@@ -859,7 +864,7 @@ Deno.serve(async (req) => {
   const from = form.get('From') ?? '';
   const body = (form.get('Body') ?? '').trim();
   const db   = admin();
-  console.log('sms-inbound ACCEPTED from ' + from);
+  console.log('sms-inbound ACCEPTED build=' + BUILD + ' from ' + from);
 
   const { data: house } = await db.from('households').select('timezone').eq('id', HOUSEHOLD).single();
   const tz = house?.timezone || 'America/Chicago';
@@ -946,7 +951,8 @@ Deno.serve(async (req) => {
       '"Piano every Tuesday 4pm Addie"\n' +
       'To change one: "planning committee moved to Monday at 4"\n' +
       'Just sent it wrong? "no, make it 4pm" or "delete that"\n' +
-      'Reply STOP to opt out.');
+      'Reply STOP to opt out.\n' +
+      `build ${BUILD}`);
   }
 
   const names = (members ?? []).map((m: any) => m.name);
