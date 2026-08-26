@@ -62,7 +62,8 @@ export function parseQuickAdd(input, opts = {}) {
     title: '', date: null, start: null, end: null, allDay: false,
     member: null, leadMinutes: opts.defaultLead ?? 30,
     repeat: null, people: [], alsoToday: null, ambiguousTime: null,
-    needsCast: false, needsRides: false, warnings: [], matched: []
+    needsCast: false, needsRides: false, needsEnd: false,
+    warnings: [], matched: []
   };
   if (!raw) { out.warnings.push('Nothing to add'); return out; }
 
@@ -423,6 +424,12 @@ export function parseQuickAdd(input, opts = {}) {
      event with no cast is still a real event — but both are worth asking
      about once, in a single follow-up, rather than never. */
   out.needsCast  = out.people.length === 0;
+  /* A pickup alert measured from the START of an event is worse than no alert
+     at all: it tells you to leave before the thing has even finished. Whoever
+     collects needs to know when it ENDS, so an event with a pickup and no end
+     time has a question outstanding. */
+  out.needsEnd = !out.allDay && !!out.start && !out.end &&
+                 out.people.some(x => x.role === 'pickup');
   const wholeFamily = members.length > 0 && out.people.length === members.length;
   const onlyMe      = out.people.length === 1 && out.people[0].name === opts.me;
   out.needsRides = out.people.length > 0 && !wholeFamily && !onlyMe &&

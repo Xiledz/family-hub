@@ -151,7 +151,7 @@ const DB = {
       : state.db.from('events').insert(row).select().single();
     const { data, error } = await q;
     if (error) throw error;
-    await DB.syncPeople(data.id, e.people);
+    await DB.syncPeople(data.id, e.people, e.lead_minutes, !!e.lead_explicit);
     await DB.setReminder(data, e.lead_minutes);
     await DB.loadEvents();
   },
@@ -171,7 +171,7 @@ const DB = {
   /* Replace the cast wholesale. Names arrive resolved against the real member
      list, so nothing enters as free text; anything that does not resolve is
      dropped rather than invented. */
-  async syncPeople(eventId, people){
+  async syncPeople(eventId, people, lead = null, leadExplicit = false){
     if (state.demo || !eventId) return;
     /* null/undefined means "this caller has nothing to say about the cast".
        The event sheet edits time and title and never touches people, so it
@@ -196,7 +196,12 @@ const DB = {
         event_id: eventId,
         member_id: mem.id,
         role: p.role,
-        lead_minutes: DB.roleLead(p.role, mem.default_lead_minutes)
+        /* An explicit "remind me 2 hours before" outranks the role default.
+           It used to be stored on the event and then ignored here, so the
+           instruction silently did nothing for anyone in the cast. */
+        lead_minutes: p.lead != null ? p.lead
+                    : (leadExplicit && lead != null) ? lead
+                    : DB.roleLead(p.role, mem.default_lead_minutes)
       });
     }
     if (rows.length) await state.db.from('event_people').insert(rows);
@@ -212,9 +217,12 @@ const DB = {
     }
     await state.db.from('reminders').delete().eq('event_id', row.id).is('sent_at', null);
     if (lead == null) return;
-    const base = row.all_day
+    const start = row.all_day
       ? new Date(`${row.event_date}T09:00:00`)          // all-day -> 9am local
       : new Date(row.starts_at);
+    /* Whoever collects is timed off the END. A pickup alert measured from the
+       start sends someone out an hour early to sit in a car park. */
+    const end = (!row.all_day && row.ends_at) ? new Date(row.ends_at) : null;
 
     /* ONE REMINDER PER PERSON, each at their own lead.
        This is the whole point of tracking roles. The parent driving needs to
@@ -227,15 +235,16 @@ const DB = {
     const rows = (cast && cast.length)
       ? cast.map(c => ({
           member_id: c.member_id,
-          lead: c.lead_minutes ?? lead
+          lead: c.lead_minutes ?? lead,
+          base: (c.role === 'pickup' && end) ? end : start
         }))
-      : [{ member_id: row.member_id, lead }];      // no cast -> the old behaviour
+      : [{ member_id: row.member_id, lead, base: start }];   // no cast -> old behaviour
 
     await state.db.from('reminders').insert(rows.map(r => ({
       household_id: CONFIG.HOUSEHOLD_ID, event_id: row.id,
       member_id: r.member_id, lead_minutes: r.lead,
       channel: CONFIG.SMS_ENABLED ? 'sms' : 'push',
-      fire_at: new Date(base.getTime() - r.lead*60000).toISOString()
+      fire_at: new Date(r.base.getTime() - r.lead*60000).toISOString()
     })));
   },
 
@@ -722,7 +731,9 @@ function renderPreview(){
     ? 'Nobody on it yet — add names to get reminders to the right phones.'
     : p.needsRides
       ? 'No ride noted. Add "Jess there, me back" if someone needs a lift.'
-      : '';
+      : p.needsEnd
+        ? 'No end time. Add "6-8pm" or "for 2 hours" — the pickup alert is measured from the end.'
+        : '';
 
   /* Never the word "Everyone". An event with nobody named is attached to
      nobody and reminds nobody, and saying "Everyone" hid exactly that. */
@@ -735,7 +746,8 @@ function renderPreview(){
       <div class="pt">${esc(p.title)}</div>
       ${p.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join('')}
       <div class="meta">
-        <span class="mtag">${d.day}</span><span class="mtag">${p.allDay ? 'All day' : esc(clockLabel(p.start))}</span>
+        <span class="mtag">${d.day}</span><span class="mtag">${p.allDay ? 'All day'
+          : esc(clockLabel(p.start) + (p.end ? ` – ${clockLabel(p.end)}` : ''))}</span>
         <span class="mtag">${esc(who)}</span><span class="mtag">&#9201; ${d.lead}</span>
         ${d.repeat ? `<span class="mtag">&#8635; ${esc(d.repeat)}</span>` : ''}
       </div>
@@ -772,6 +784,7 @@ function parsedToEvent(p){
     starts_at: p.allDay ? null : new Date(`${p.date}T${p.start}:00`).toISOString(),
     ends_at:   p.end ? new Date(`${p.date}T${p.end}:00`).toISOString() : null,
     member_id: mem?.id || null, lead_minutes: p.leadMinutes, source: 'web',
+    lead_explicit: p.matched?.includes('lead') ?? false,
     // The parser now returns a real recurrence rule. Dropping it here was the
     // bug that made "every Tuesday" silently produce a single event.
     repeat_freq:     p.repeat?.freq     ?? null,

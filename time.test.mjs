@@ -73,5 +73,14 @@ eq('ride given -> no question',  P('Recital Friday 7pm, Addie going, Jess drivin
 eq('just me -> no ride question',P('Dentist Thursday 3pm, I am going').needsRides, false);
 eq('whole family -> no question',P('Picnic Saturday 2pm everyone').needsRides, false);
 
+// --- end times, and when one is missing ------------------------------------
+eq('range gives an end',   [P('Soccer Thu 6-8pm').start, P('Soccer Thu 6-8pm').end], ['18:00','20:00']);
+eq('duration gives an end',[P('Soccer Thu 6pm for 2 hours').start, P('Soccer Thu 6pm for 2 hours').end], ['18:00','20:00']);
+eq('pickup with no end',   P('Soccer Thu 6pm, Addie going, me back').needsEnd, true);
+eq('pickup with an end',   P('Soccer Thu 6-8pm, Addie going, me back').needsEnd, false);
+eq('no pickup, no question',P('Soccer Thu 6pm, Addie going, Jess driving').needsEnd, false);
+eq('dropoff only, no question', P('Soccer Thu 6pm, Addie going, Jess there').needsEnd, false);
+eq('all day has no end question', P('Field trip Friday all day, Addie going, me back').needsEnd, false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

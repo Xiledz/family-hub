@@ -21,6 +21,8 @@ const grab = name => {
 const FIX_PREFIX = grab('FIX_PREFIX');
 const FIX_VERB   = grab('FIX_VERB');
 const KILL       = grab('KILL');
+const LENGTH_RE  = grab('LENGTH_RE');
+const UNTIL_RE   = grab('UNTIL_RE');
 
 const M = ['Erich','Jess','Addie','Bryce'];
 const NOW = new Date('2026-08-25T10:00:00');
@@ -34,6 +36,7 @@ function classify(body) {
   if (verb) rest = rest.slice(verb[0].length).trim();
 
   const wantsKill = KILL.test(rest) || KILL.test(body);
+  if (LENGTH_RE.test(rest) || UNTIL_RE.test(rest)) return 'end';
   const w = rest ? parseQuickAdd(rest, { members: M, now: NOW, defaultLead: null, me: 'Erich' }) : null;
   const castOnly = !!w && w.people.length > 0 &&
                    !w.matched.includes('date') && !w.matched.includes('time');
@@ -78,6 +81,17 @@ is('undo', 'kill');
 is('nevermind, delete it', 'kill');
 is('forget it', 'kill');
 
+// --- how long does it run --------------------------------------------------
+is('2 hours', 'end');
+is('for 2 hours', 'end');
+is('90 minutes', 'end');
+is('45 min', 'end');
+is('1.5 hrs', 'end');
+is('til 8pm', 'end');
+is('until 8:30', 'end');
+is('ends at 7', 'end');
+is('no, 2 hours', 'end');
+
 // --- NOT corrections: these must still create events -----------------------
 is('Soccer Thursday 4pm', 'new');
 is('Dentist tomorrow 9am Addie', 'new');
@@ -89,6 +103,10 @@ is('help', 'new');
 /* The trap: a correction prefix on a message that changes nothing real.
    "no thanks" must not be read as an instruction to edit anything. */
 is('no thanks', 'new');
+/* A length is only ever an answer. A title that merely CONTAINS one is not:
+   "Piano lesson 1 hour" names a thing and must still create an event. */
+is('Piano lesson 1 hour', 'new');
+is('Meeting Thursday for 2 hours', 'new');
 is('nope', 'new');
 
 console.log(`\n${pass} passed, ${fail} failed`);

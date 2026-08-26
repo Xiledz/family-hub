@@ -89,7 +89,8 @@ function parseQuickAdd(input, opts = {}) {
     title: '', date: null, start: null, end: null, allDay: false,
     member: null, leadMinutes: opts.defaultLead ?? 30,
     repeat: null, people: [], alsoToday: null, ambiguousTime: null,
-    needsCast: false, needsRides: false, warnings: [], matched: []
+    needsCast: false, needsRides: false, needsEnd: false,
+    warnings: [], matched: []
   };
   if (!raw) { out.warnings.push('Nothing to add'); return out; }
 
@@ -450,6 +451,12 @@ function parseQuickAdd(input, opts = {}) {
      event with no cast is still a real event — but both are worth asking
      about once, in a single follow-up, rather than never. */
   out.needsCast  = out.people.length === 0;
+  /* A pickup alert measured from the START of an event is worse than no alert
+     at all: it tells you to leave before the thing has even finished. Whoever
+     collects needs to know when it ENDS, so an event with a pickup and no end
+     time has a question outstanding. */
+  out.needsEnd = !out.allDay && !!out.start && !out.end &&
+                 out.people.some(x => x.role === 'pickup');
   const wholeFamily = members.length > 0 && out.people.length === members.length;
   const onlyMe      = out.people.length === 1 && out.people[0].name === opts.me;
   out.needsRides = out.people.length > 0 && !wholeFamily && !onlyMe &&
@@ -614,45 +621,79 @@ function roleLead(role: string, memberDefault: number | null) {
 }
 
 /* Write the cast, then one reminder per person at their own lead. A series
-   leaves reminders to the nightly materializer. */
+   leaves reminders to the nightly materializer.
+
+   Two rules that took a bug each to learn:
+
+   1. AN EXPLICIT INSTRUCTION OUTRANKS A ROLE DEFAULT. "remind me 2 hours
+      before" used to be stored on the event and then quietly ignored, because
+      every cast member's reminder was recomputed from their role default. If
+      you said two hours, you get two hours.
+
+   2. A PICKUP IS MEASURED FROM THE END. Telling someone to leave for pickup
+      thirty minutes before the event STARTS is worse than saying nothing —
+      they arrive an hour early and the kid is still inside. Whoever collects
+      is timed off ends_at when there is one. */
 async function writeCastAndReminders(db: any, ev: any, people: any[], members: any[],
-                                     lead: number | null, tz: string, isSeries: boolean) {
+                                     lead: number | null, tz: string, isSeries: boolean,
+                                     leadExplicit = false) {
   await db.from('event_people').delete().eq('event_id', ev.id);
   const rows = [];
   for (const p of people ?? []) {
     const mem = members.find((m: any) => m.name === p.name);
     if (!mem) continue;                                  // unknown -> not stored
+    const own = p.lead != null ? p.lead
+              : (leadExplicit && lead != null) ? lead
+              : roleLead(p.role, mem.default_lead_minutes);
     rows.push({ household_id: HOUSEHOLD, event_id: ev.id, member_id: mem.id,
-                role: p.role, lead_minutes: roleLead(p.role, mem.default_lead_minutes) });
+                role: p.role, lead_minutes: own });
   }
   if (rows.length) await db.from('event_people').insert(rows);
 
   await db.from('reminders').delete().eq('event_id', ev.id).is('sent_at', null);
   if (lead == null || isSeries) return;
 
-  const baseIso = ev.all_day ? wallToUtc(ev.event_date, '09:00', tz) : ev.starts_at;
-  const cast = rows.length ? rows : [{ member_id: ev.member_id, lead_minutes: lead }];
+  const startIso = ev.all_day ? wallToUtc(ev.event_date, '09:00', tz) : ev.starts_at;
+  const endIso   = ev.all_day ? null : (ev.ends_at ?? null);
+  const cast = rows.length ? rows
+             : [{ member_id: ev.member_id, lead_minutes: lead, role: 'going' }];
   const reminders = [];
   for (const c of cast) {
     if (!c.member_id) continue;
+    const base = (c.role === 'pickup' && endIso) ? endIso : startIso;
     const { count } = await db.from('push_subscriptions')
       .select('id', { count: 'exact', head: true }).eq('member_id', c.member_id);
     reminders.push({
       household_id: HOUSEHOLD, event_id: ev.id, member_id: c.member_id,
       lead_minutes: c.lead_minutes ?? lead,
       channel: (count ?? 0) > 0 ? 'push' : 'sms',
-      fire_at: new Date(Date.parse(baseIso) - (c.lead_minutes ?? lead) * 60_000).toISOString()
+      fire_at: new Date(Date.parse(base) - (c.lead_minutes ?? lead) * 60_000).toISOString()
     });
   }
   if (reminders.length) await db.from('reminders').insert(reminders);
 }
 
+/* An end time on the same calendar day, unless the clock says otherwise —
+   "9pm to 1am" ends tomorrow, not fourteen hours before it started. */
+function endInstant(date: string, start: string, end: string, tz: string) {
+  let iso = wallToUtc(date, end, tz);
+  if (Date.parse(iso) <= Date.parse(wallToUtc(date, start, tz))) {
+    const d = new Date(date + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() + 1);
+    iso = wallToUtc(d.toISOString().slice(0, 10), end, tz);
+  }
+  return iso;
+}
+
 async function createEvent(db: any, p: any, members: any[], sender: any, tz: string, date: string) {
   const member   = members.find((m: any) => m.name === p.member);
   const startsAt = p.allDay ? null : wallToUtc(date, p.start, tz);
+  // Dropped on the floor until now, which is why "Soccer 6-8pm" lost the 8.
+  const endsAt   = (!p.allDay && p.end) ? endInstant(date, p.start, p.end, tz) : null;
   const { data: ev, error } = await db.from('events').insert({
     household_id: HOUSEHOLD, member_id: member?.id ?? null,
-    title: p.title, all_day: p.allDay, event_date: date, starts_at: startsAt,
+    title: p.title, all_day: p.allDay, event_date: date,
+    starts_at: startsAt, ends_at: endsAt,
     reminder_lead_minutes: p.leadMinutes ?? null,
     repeat_freq:     p.repeat?.freq     ?? null,
     repeat_interval: p.repeat?.interval ?? 1,
@@ -661,7 +702,8 @@ async function createEvent(db: any, p: any, members: any[], sender: any, tz: str
     created_by: sender.id, source: 'sms'
   }).select().single();
   if (error) return null;
-  await writeCastAndReminders(db, ev, p.people, members, p.leadMinutes, tz, !!p.repeat);
+  await writeCastAndReminders(db, ev, p.people, members, p.leadMinutes, tz, !!p.repeat,
+                              p.matched.includes('lead'));
   return ev;
 }
 
@@ -715,6 +757,8 @@ function confirmText(p: any, date: string, verb = 'Added') {
 function nudge(p: any) {
   if (p.needsCast)  return '\n\nWho’s going? Reply: "Addie going, Jess there, me back"';
   if (p.needsRides) return '\n\nRides? Reply: "Jess there, me back" — or ignore this.';
+  if (p.needsEnd)   return '\n\nHow long does it run? Reply "2 hours" or "til 8pm" — ' +
+                           'the pickup alert is measured from the end.';
   return '';
 }
 
@@ -786,6 +830,35 @@ const FIX_PREFIX = /^(?:no+|nope|actually|wait|sorry|oops|whoops|correction|scra
 const FIX_VERB   = /^(?:make (?:it|that)|change (?:it|that)(?:\s+to)?|change to|move (?:it|that) to|set (?:it|that) to|it'?s|its)\b[\s,:-]*/i;
 const KILL       = /^(?:delete|cancel|remove|undo|drop|forget)\s*(?:that|it|the last one|last one|last)?[\s.!]*$/i;
 
+/* "2 hours" and "til 8pm" are answers to the how-long question, and nothing
+   else. Neither is a plausible event title, so both are safe to read as a
+   correction to the last thing you touched. */
+const LENGTH_RE = /^(?:for\s+|about\s+|abt\s+)?(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\.?$/i;
+const UNTIL_RE  = /^(?:til|till|until|thru|through|to|ends?(?:\s+at)?|done(?:\s+at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\.?$/i;
+
+/* Set how long the last event runs, and re-time anyone collecting. */
+async function applyEnd(db: any, ev: any, endWall: string, members: any[],
+                        sender: any, tz: string) {
+  const startWall = ev.all_day ? '09:00' : utcToWall(ev.starts_at, tz);
+  const endsAt = endInstant(ev.event_date, startWall, endWall, tz);
+  await db.from('events').update({ ends_at: endsAt }).eq('id', ev.id);
+
+  const { data: existing } = await db.from('event_people')
+    .select('member_id, role, lead_minutes').eq('event_id', ev.id);
+  const cast = (existing ?? []).map((r: any) => {
+    const mem = members.find((m: any) => m.id === r.member_id);
+    return mem ? { name: mem.name, role: r.role, lead: r.lead_minutes } : null;
+  }).filter(Boolean);
+
+  await writeCastAndReminders(db, { ...ev, ends_at: endsAt }, cast, members,
+    ev.reminder_lead_minutes, tz, !!ev.repeat_freq);
+  await remember(db, sender, ev.id, ev.event_date, 'edit');
+
+  const pickers = cast.filter((c: any) => c.role === 'pickup').map((c: any) => c.name);
+  return twiml(`${ev.title}\n${pretty(ev.event_date)} · ${clock(startWall)} to ${clock(endWall)}` +
+    (pickers.length ? `\n${pickers.join(', ')} — pickup alert now set from the end.` : ''));
+}
+
 async function applyFix(db: any, ev: any, w: any, members: any[], sender: any, tz: string) {
   if (w.ambiguousTime) {
     await db.from('sms_pending').upsert({
@@ -809,23 +882,32 @@ async function applyFix(db: any, ev: any, w: any, members: any[], sender: any, t
     patch.starts_at = wallToUtc(date, utcToWall(ev.starts_at, tz), tz);
   }
   if (w.matched.includes('lead')) patch.reminder_lead_minutes = w.leadMinutes;
+  // A corrected end time, or one dragged along by a change of day/time.
+  if (movedTime && w.end)      patch.ends_at = endInstant(date, w.start, w.end, tz);
+  else if (ev.ends_at && (movedDate || movedTime)) {
+    const shift = Date.parse(patch.starts_at ?? ev.starts_at) - Date.parse(ev.starts_at);
+    patch.ends_at = new Date(Date.parse(ev.ends_at) + shift).toISOString();
+  }
   if (Object.keys(patch).length) await db.from('events').update(patch).eq('id', ev.id);
 
   // Merge the cast by name: a correction naming one person must not silently
   // drop everybody else off the event.
   const { data: existing } = await db.from('event_people')
-    .select('member_id, role').eq('event_id', ev.id);
+    .select('member_id, role, lead_minutes').eq('event_id', ev.id);
   const byName = new Map<string, any>();
   for (const r of existing ?? []) {
     const mem = members.find((m: any) => m.id === r.member_id);
-    if (mem) byName.set(mem.name, { name: mem.name, role: r.role });
+    // Carry each person's own lead across, or a correction to the time would
+    // quietly reset everybody to their role default.
+    if (mem) byName.set(mem.name, { name: mem.name, role: r.role, lead: r.lead_minutes });
   }
   for (const p of w.people ?? []) byName.set(p.name, p);
-  const merged = [...byName.values()];
+  const merged = [...byName.values()]
+    .map((c: any) => w.matched.includes('lead') ? { ...c, lead: null } : c);
 
   const evNow = { ...ev, ...patch };
   await writeCastAndReminders(db, evNow, merged, members,
-    evNow.reminder_lead_minutes, tz, !!ev.repeat_freq);
+    evNow.reminder_lead_minutes, tz, !!ev.repeat_freq, w.matched.includes('lead'));
   await remember(db, sender, ev.id, date, 'edit');
 
   const shown = { title: ev.title, allDay: evNow.all_day,
@@ -969,6 +1051,33 @@ Deno.serve(async (req) => {
     if (verb) rest = rest.slice(verb[0].length).trim();
 
     const wantsKill = KILL.test(rest) || KILL.test(body);
+
+    /* How long does it run? Answered as a length or as a finish time. */
+    const lm = rest.match(LENGTH_RE), um = rest.match(UNTIL_RE);
+    if (lm || um) {
+      const { data: la } = await db.from('sms_last_action').select('*')
+        .eq('member_id', sender.id).maybeSingle();
+      const { data: ev } = la?.event_id
+        ? await db.from('events').select('*').eq('id', la.event_id)
+            .is('deleted_at', null).maybeSingle()
+        : { data: null };
+      if (!ev) return twiml("Nothing recent of yours to set that on.");
+      if (ev.all_day) return twiml(`${ev.title} is an all-day event — no end time to set.`);
+
+      let endWall: string;
+      if (lm) {
+        const n = parseFloat(lm[1]);
+        const mins = /^h/i.test(lm[2]) ? Math.round(n * 60) : Math.round(n);
+        endWall = shift(utcToWall(ev.starts_at, tz), mins);
+      } else {
+        const h = +um![1], mi = um![2] ? +um![2] : 0, ap = um![3];
+        const hh = hm(h, mi, ap) ?? (h >= 1 && h <= 6 ? `${pad(h + 12)}:${pad(mi)}`
+                                                      : `${pad(h)}:${pad(mi)}`);
+        endWall = ap ? hh : (h >= 1 && h <= 6 ? `${pad(h + 12)}:${pad(mi)}` : hh);
+      }
+      return await applyEnd(db, ev, endWall, members ?? [], sender, tz);
+    }
+
     const w = rest ? parseQuickAdd(rest, {
       members: names, now, defaultLead: null, me: sender.name }) : null;
 
