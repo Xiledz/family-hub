@@ -695,7 +695,8 @@ const dayLabel = d => new Date(d + 'T12:00:00')
 function preview(){
   const text = qaIn.value.trim(); if (!text) return;
   state.parsed = parseQuickAdd(text, {
-    members: state.members.map(m => m.name),
+    // Names AND aliases — a kid texts "mom is driving", not "Jess is driving".
+    members: state.members.map(m => ({ name: m.name, aliases: m.aliases || [] })),
     defaultLead: state.me?.default_lead_minutes ?? 30,
     me: state.me?.name
   });
