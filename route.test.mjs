@@ -32,8 +32,9 @@ const TRIP_DONE   = grab('TRIP_DONE');
 const CLEAR_VERB  = grab('CLEAR_VERB');
 const BULK_FILLER = grab('BULK_FILLER');
 
-const storeIn = t => [...STORES].sort((a, b) => b.name.length - a.name.length)
-  .find(s => new RegExp(`\\b${s.name}\\b`, 'i').test(t)) || null;
+import { storeTerms } from './parse.js';
+const storeIn = t => (storeTerms(STORES).find(({ text }) =>
+  new RegExp(`\\b${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(t)) || {}).store || null;
 
 const ROSTER = [
   { name: 'Erich', aliases: ['dad'] }, { name: 'Jess', aliases: ['mom'] },
@@ -43,9 +44,13 @@ const NOW = new Date('2026-08-26T10:00:00');
 
 /* Mirrors the handler. If the handler changes shape and this stops matching,
    that mismatch is the point. */
-const STORES = [{ id: 'h1', name: 'HEB' }, { id: 'h2', name: 'HEB 2' },
-                { id: 'k', name: 'Kroger' }, { id: 'c', name: 'Costco' },
-                { id: 's', name: 'Sams Club' }];
+const STORES = [
+  { id: 'h1', name: 'HEB Harpers Trace', aliases: ['harpers','harper','harpers trace','242'] },
+  { id: 'h2', name: 'HEB on 1488',       aliases: ['1488','heb 1488','north woodlands'] },
+  { id: 'k',  name: 'Kroger',            aliases: ['krogers','cochrans'] },
+  { id: 'c',  name: 'Costco',            aliases: [] },
+  { id: 's',  name: 'Sams Club',         aliases: ['sams',"sam's"] },
+];
 
 function route(body) {
   if (LIST_CMD.test(body)) return 'show';
@@ -59,7 +64,8 @@ function route(body) {
   if (cv) {
     const st = storeIn(cv[1] || '');
     let rest = cv[1] || '';
-    if (st) rest = rest.replace(new RegExp(`\\b${st.name}\\b`, 'ig'), ' ');
+    if (st) for (const { text } of storeTerms([st]))
+      rest = rest.replace(new RegExp(`\\b${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'ig'), ' ');
     rest = rest.replace(BULK_FILLER, ' ').replace(/[^a-z0-9 ]/gi, ' ').trim();
     if (!rest) return st ? `clear:${st.name}` : 'clear:all';
   }
@@ -96,8 +102,8 @@ is('we need paper towels', 'shop');
 is('grab dog food', 'shop');
 is('add ziploc bags to the shopping list', 'shop');
 is('kroger: tylenol and diapers', 'shop');
-is('HEB: bananas', 'shop');
-is('at HEB 2 grab milk', 'shop');
+is('harpers: bananas', 'shop');
+is('at 1488 grab milk', 'shop');
 is('pick up bananas', 'shop');
 is('groceries: milk and eggs', 'shop');
 
@@ -182,15 +188,16 @@ is('delete everything', 'clear:all');
 is('clear out the whole list', 'clear:all');
 is('wipe the list', 'clear:all');
 
-is('remove HEB list', 'clear:HEB');
+is('remove harpers list', 'clear:HEB Harpers Trace');
 is('clear the kroger list', 'clear:Kroger');
 is('remove everything from the costco list', 'clear:Costco');
 is('wipe the sams club list', 'clear:Sams Club');
-is('empty HEB 2 list', 'clear:HEB 2');
+is('empty 1488 list', 'clear:HEB on 1488');
 
 /* Nearly the same words, opposite outcomes. Showing must not clear, and
    clearing must not merely show. */
-is('HEB list', 'show:HEB');
+is('harpers list', 'show:HEB Harpers Trace');
+is('1488 list', 'show:HEB on 1488');
 is('show the kroger list', 'show:Kroger');
 is("what's on the costco list", 'show:Costco');
 

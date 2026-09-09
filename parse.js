@@ -968,15 +968,25 @@ function splitRun(part, knownSet) {
    "ground beef, list, Kroger, diapers". A store name is a switch, not a
    prefix — everything after it belongs to that store until the next one.
    Looking only at the front of the message turned "Kroger" into an item. */
+/* Every way a store gets said, longest first so "HEB Harpers Trace" is never
+   cut short as "HEB", and "sams club" is never cut short as "sams". */
+export function storeTerms(stores) {
+  const terms = [];
+  for (const st of (stores || [])) {
+    terms.push({ store: st, text: st.name });
+    for (const a of (st.aliases || [])) if (a) terms.push({ store: st, text: a });
+  }
+  return terms.sort((a, b) => b.text.length - a.text.length);
+}
+
 function storeSections(text, stores) {
-  const byLength = [...(stores || [])].sort((a, b) => b.name.length - a.name.length);
   const hits = [];
-  for (const st of byLength) {
-    const re = new RegExp(`(?:^|\\b)(?:at\\s+|from\\s+)?${escapeRe(st.name)}\\b\\s*[:,-]?\\s*`, 'gi');
+  for (const { store: st, text: term } of storeTerms(stores)) {
+    const re = new RegExp(`(?:^|\\b)(?:at\\s+|from\\s+)?${escapeRe(term)}\\b\\s*[:,-]?\\s*`, 'gi');
     let m;
     while ((m = re.exec(text))) {
       const at = m.index, end = m.index + m[0].length;
-      // "HEB 2" is matched before "HEB", so the longer name wins its span.
+      // Longer terms are tried first, so the longer name wins its span.
       if (!hits.some(h => at < h.end && end > h.at)) hits.push({ at, end, store: st });
       if (re.lastIndex <= at) re.lastIndex = at + 1;
     }

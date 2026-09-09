@@ -995,15 +995,25 @@ function splitRun(part, knownSet) {
    "ground beef, list, Kroger, diapers". A store name is a switch, not a
    prefix — everything after it belongs to that store until the next one.
    Looking only at the front of the message turned "Kroger" into an item. */
+/* Every way a store gets said, longest first so "HEB Harpers Trace" is never
+   cut short as "HEB", and "sams club" is never cut short as "sams". */
+function storeTerms(stores) {
+  const terms = [];
+  for (const st of (stores || [])) {
+    terms.push({ store: st, text: st.name });
+    for (const a of (st.aliases || [])) if (a) terms.push({ store: st, text: a });
+  }
+  return terms.sort((a, b) => b.text.length - a.text.length);
+}
+
 function storeSections(text, stores) {
-  const byLength = [...(stores || [])].sort((a, b) => b.name.length - a.name.length);
   const hits = [];
-  for (const st of byLength) {
-    const re = new RegExp(`(?:^|\\b)(?:at\\s+|from\\s+)?${escapeRe(st.name)}\\b\\s*[:,-]?\\s*`, 'gi');
+  for (const { store: st, text: term } of storeTerms(stores)) {
+    const re = new RegExp(`(?:^|\\b)(?:at\\s+|from\\s+)?${escapeRe(term)}\\b\\s*[:,-]?\\s*`, 'gi');
     let m;
     while ((m = re.exec(text))) {
       const at = m.index, end = m.index + m[0].length;
-      // "HEB 2" is matched before "HEB", so the longer name wins its span.
+      // Longer terms are tried first, so the longer name wins its span.
       if (!hits.some(h => at < h.end && end > h.at)) hits.push({ at, end, store: st });
       if (re.lastIndex <= at) re.lastIndex = at + 1;
     }
@@ -1167,7 +1177,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-08f-bulk';
+const BUILD = '2026-09-09a-stores';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
@@ -1448,7 +1458,7 @@ const CLEAR_VERB  = /^(?:clear|empty|wipe|reset|remove|delete|erase)\b\s*(.*)$/i
 const BULK_FILLER = /\b(?:the|a|an|whole|entire|all|everything|every|of|from|out|off|items?|things?|stuff|shopping|grocery|groceries|lists?|please)\b/gi;
 
 async function shopContext(db: any) {
-  const { data: stores }  = await db.from('stores').select('id, name, flyer_group, sort_order')
+  const { data: stores }  = await db.from('stores').select('id, name, flyer_group, sort_order, aliases')
     .eq('household_id', HOUSEHOLD).is('deleted_at', null).order('sort_order');
   const { data: catalog } = await db.from('shopping_catalog')
     .select('name, category, store_id, times_added').eq('household_id', HOUSEHOLD);
@@ -1521,26 +1531,30 @@ async function addShopping(db: any, body: string, sender: any) {
     (dupes.length ? `\n\nAlready there: ${dupes.map((d: any) => d.name).join(', ')}` : ''));
 }
 
+const esc = (x: string) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/* Every way a store gets said — its name and its aliases — as one pattern,
+   longest first. "Harpers" has to find HEB Harpers Trace. */
 const storeRe = (st: any) =>
-  new RegExp(`\\b${String(st.name).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'ig');
+  new RegExp(`\\b(?:${[st.name, ...(st.aliases ?? [])].filter(Boolean)
+    .sort((a: string, b: string) => b.length - a.length).map(esc).join('|')})\\b`, 'ig');
 
-/* Find a store named ANYWHERE in a phrase, longest name first so "HEB 2"
-   is never mistaken for "HEB". */
+/* Find a store named ANYWHERE in a phrase. Longest term wins, so "HEB on
+   1488" is never cut short to "HEB". */
 function storeIn(stores: any[], text: string) {
   const t = String(text);
-  return [...stores].sort((a, b) => b.name.length - a.name.length)
-    .find((s: any) => storeRe(s).test(t)) ?? null;
+  const hits = storeTerms(stores).filter(({ text: term }) =>
+    new RegExp(`\\b${esc(term)}\\b`, 'i').test(t));
+  return hits.length ? hits[0].store : null;
 }
 const stripStore = (st: any, text: string) => String(text).replace(storeRe(st), ' ');
 
 /* Match a store by name, loosely — "heb", "the HEB", "H-E-B". */
 function findStore(stores: any[], text: string) {
-  const t = String(text).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  const norm = (n: string) => String(n).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  const t = norm(text);
   if (!t) return null;
-  const norm = (n: string) => n.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-  return stores.find((s: any) => norm(s.name) === t)
-      || stores.find((s: any) => t.includes(norm(s.name)) || norm(s.name).includes(t))
-      || null;
+  for (const { store, text: term } of storeTerms(stores)) if (norm(term) === t) return store;
+  return storeIn(stores, text);
 }
 
 async function showShopping(db: any, store: any = null) {

@@ -9,9 +9,13 @@
  * ========================================================================= */
 import { parseShopping, SHOP_CATEGORIES, looksMerged, skeleton, repairName } from './parse.js';
 
-const STORES = [{ id: 'h1', name: 'HEB' }, { id: 'h2', name: 'HEB 2' },
-                { id: 'k', name: 'Kroger' }, { id: 'c', name: 'Costco' },
-                { id: 's', name: 'Sams Club' }];
+const STORES = [
+  { id: 'h1', name: 'HEB Harpers Trace', aliases: ['harpers','harper','harpers trace','242'] },
+  { id: 'h2', name: 'HEB on 1488',       aliases: ['1488','heb 1488','north woodlands'] },
+  { id: 'k',  name: 'Kroger',            aliases: ['krogers','cochrans'] },
+  { id: 'c',  name: 'Costco',            aliases: [] },
+  { id: 's',  name: 'Sams Club',         aliases: ['sams',"sam's"] },
+];
 const P = (s, catalog) => parseShopping(s, { stores: STORES, catalog });
 const names = s => P(s).items.map(i => i.name);
 const cats  = s => P(s).items.map(i => i.category);
@@ -140,7 +144,7 @@ eq('"a" alone is not a qty', P('a pineapple').items[0].name, 'pineapple');
 
 // --- stores ---------------------------------------------------------------
 eq('colon prefix',  P('kroger: tylenol').store.name, 'Kroger');
-eq('at STORE',      P('at HEB get bananas').store.name, 'HEB');
+eq('at STORE',      P('at harpers get bananas').store.name, 'HEB Harpers Trace');
 eq('store leaves the item', names('kroger: tylenol'), ['tylenol']);
 eq('no store named', P('buy milk').store, null);
 
@@ -153,8 +157,8 @@ eq('store switches mid-sentence',
    ['-:milk','-:eggs','Kroger:diapers','Costco:paper towels']);
 eq('noise words are not items',
    withStore('ground beef list kroger diapers'), ['-:ground beef','Kroger:diapers']);
-eq('the verb can follow the store', names('at HEB 2 grab milk'), ['milk']);
-eq('longest store name wins',      P('at HEB 2 grab milk').items[0].store.name, 'HEB 2');
+eq('the verb can follow the store', names('at 1488 grab milk'), ['milk']);
+eq('longest store name wins',      P('at 1488 grab milk').items[0].store.name, 'HEB on 1488');
 eq('a leading store still covers everything',
    withStore('kroger: tylenol and diapers'), ['Kroger:tylenol','Kroger:diapers']);
 

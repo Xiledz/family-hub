@@ -3,7 +3,7 @@
  * No build step. Native ES modules, loaded straight from GitHub Pages.
  * ==========================================================================*/
 import { CONFIG, isDemo } from './config.js';
-import { parseQuickAdd, describe } from './parse.js';
+import { parseQuickAdd, describe, parseShopping } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
 
 const $  = s => document.querySelector(s);
@@ -29,7 +29,9 @@ const state = {
   db: null, demo: isDemo(),
   household: null, members: [], events: [], exceptions: [], me: null,
   module: 'calendar', view: 'today', cursor: null,   // cursor = the date each view is centred on
-  editing: null, editingOccurrence: null, parsed: null, pendingScope: null
+  editing: null, editingOccurrence: null, parsed: null, pendingScope: null,
+  // shopping
+  stores: [], shopItems: [], shopCatalog: [], shopAisles: [], shopStore: null, shopCats: []
 };
 
 const REPEATS = [
@@ -422,6 +424,7 @@ function render(){
   $('#hello').firstChild.textContent = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
   $('#hello-sub').textContent = now.toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
 
+  if (state.module === 'shopping') { $('#viewbar').classList.add('hide'); return renderShopping(); }
   if (state.module !== 'calendar') { $('#viewbar').classList.add('hide'); return renderPlaceholder(); }
 
   $('#viewbar').classList.remove('hide');
@@ -629,6 +632,181 @@ function stepCursor(dir){
     state.cursor = rymd(new Date(d.getFullYear(), d.getMonth()+dir, 1)); state.selectedDay = null; }
 }
 
+/* ==========================================================================
+ * SHOPPING
+ *
+ * The list you read standing in an aisle with a cart in one hand. Everything
+ * here is one tap: tick it, untick it, take it off. Items sort into walking
+ * order for the store you are in — real aisle numbers where we have them
+ * (HEB on 1488, from H-E-B's published guide), category order otherwise.
+ *
+ * Same parser as the text number. Type "milk eggs 2 lbs ground beef" here
+ * and it splits exactly the way it does by text.
+ * ========================================================================*/
+const SHOP = {
+  async load(){
+    if (state.demo) return;
+    const hh = CONFIG.HOUSEHOLD_ID;
+    const [st, it, cat, ai, cats] = await Promise.all([
+      state.db.from('stores').select('id, name, aliases, sort_order').eq('household_id', hh)
+        .is('deleted_at', null).order('sort_order'),
+      state.db.from('shopping_items').select('*').eq('household_id', hh).is('cleared_at', null)
+        .order('created_at'),
+      state.db.from('shopping_catalog').select('name, category, store_id').eq('household_id', hh),
+      state.db.from('store_aisles').select('store_id, category, aisle, sort_order, verified_at'),
+      state.db.from('shopping_categories').select('name, sort_order')
+    ]);
+    state.stores = st.data || []; state.shopItems = it.data || [];
+    state.shopCatalog = cat.data || []; state.shopAisles = ai.data || [];
+    state.shopCats = cats.data || [];
+  },
+
+  async add(text){
+    const p = parseShopping(text, { stores: state.stores, catalog: state.shopCatalog });
+    if (!p.items.length) { toast('Nothing to add'); return; }
+    const live = new Set(state.shopItems.filter(i => !i.got)
+      .map(i => `${i.store_id ?? ''}|${i.name.toLowerCase()}`));
+    const rows = [];
+    for (const it of p.items) {
+      const sid = it.store?.id ?? state.shopStore ?? null;
+      if (live.has(`${sid ?? ''}|${it.name.toLowerCase()}`)) continue;    // already there
+      rows.push({
+        household_id: CONFIG.HOUSEHOLD_ID, store_id: sid,
+        name: it.name, qty: it.qty, note: it.note, category: it.category,
+        pick_yourself: !!it.pickYourself, online_ok: !!it.onlineOk,
+        added_by: state.me?.id || null, source: 'web'
+      });
+    }
+    if (!rows.length) { toast('Already on the list'); return; }
+    const { error } = await state.db.from('shopping_items').insert(rows);
+    if (error) { console.error(error); toast('Could not save'); return; }
+    // remember what this family buys — same guard as the text number
+    for (const it of p.items) {
+      const seen = state.shopCatalog.find(c => c.name.toLowerCase() === it.name.toLowerCase());
+      if (seen) continue;
+      await state.db.from('shopping_catalog').insert({
+        household_id: CONFIG.HOUSEHOLD_ID, name: it.name, category: it.category,
+        store_id: it.store?.id ?? null
+      });
+    }
+    if (p.corrections.length) toast(`Read "${p.corrections[0].from}" as ${p.corrections[0].name}`);
+    await SHOP.load(); render();
+  },
+
+  async toggle(id){
+    const it = state.shopItems.find(i => i.id === id); if (!it) return;
+    const got = !it.got;
+    it.got = got;                                            // optimistic
+    render();
+    await state.db.from('shopping_items').update({
+      got, got_at: got ? new Date().toISOString() : null, got_by: got ? state.me?.id : null
+    }).eq('id', id);
+  },
+
+  /* A mistake, not a purchase: gone, and forgotten by the catalog so it is
+     never suggested or merged again. */
+  async remove(id){
+    const it = state.shopItems.find(i => i.id === id); if (!it) return;
+    state.shopItems = state.shopItems.filter(i => i.id !== id); render();
+    await state.db.from('shopping_items').delete().eq('id', id);
+    await state.db.from('shopping_catalog').delete()
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('name', it.name);
+  },
+
+  /* Recoverable. Rows move to history; nothing is destroyed. */
+  async clear(storeId, boughtOnly){
+    let q = state.db.from('shopping_items').update({ cleared_at: new Date().toISOString() })
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).is('cleared_at', null);
+    if (storeId) q = q.eq('store_id', storeId);
+    if (boughtOnly) q = q.eq('got', true);
+    await q;
+    await SHOP.load(); render();
+    toast(boughtOnly ? 'Bought items cleared' : 'List cleared');
+  },
+
+  /* Walking order for a store: its aisle table where we have one, category
+     order where we do not. */
+  order(storeId){
+    const cat = new Map(state.shopCats.map(c => [c.name, c.sort_order]));
+    const ais = new Map(state.shopAisles.filter(a => a.store_id === storeId)
+      .map(a => [a.category, a]));
+    return (item) => {
+      const a = ais.get(item.category);
+      return a && a.sort_order != null ? a.sort_order : 100 + (cat.get(item.category) ?? 999);
+    };
+  },
+  aisleOf(storeId, category){
+    return state.shopAisles.find(a => a.store_id === storeId && a.category === category)?.aisle || null;
+  }
+};
+
+function renderShopping(){
+  $('#qa').classList.add('hide');
+  const storeName = id => state.stores.find(s => s.id === id)?.name || 'Any store';
+  const sel = state.shopStore;                       // null = everything
+  const items = state.shopItems.filter(i => !sel || i.store_id === sel);
+  const need = items.filter(i => !i.got), got = items.filter(i => i.got);
+
+  // group by store when showing everything; the list is read in ONE store
+  const groups = new Map();
+  for (const it of need) {
+    const k = sel ? sel : (it.store_id || '');
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(it);
+  }
+  const rowHtml = (it, storeId) => {
+    const aisle = SHOP.aisleOf(storeId, it.category);
+    return `<li class="shop-row${it.got ? ' got' : ''}" data-id="${it.id}">
+      <button class="tick" data-tick="${it.id}" aria-label="${it.got ? 'Not got' : 'Got it'}">${it.got ? '&#10003;' : ''}</button>
+      <span class="body">
+        <span class="nm">${it.qty ? `<b>${esc(it.qty)}</b> ` : ''}${esc(it.name)}${it.note ? ` <i>(${esc(it.note)})</i>` : ''}</span>
+        <span class="meta">${aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}</span>
+      </span>
+      <button class="x" data-x="${it.id}" aria-label="Remove">&times;</button>
+    </li>`;
+  };
+
+  const blocks = [...groups.entries()].map(([k, rows]) => {
+    rows.sort((a, b) => SHOP.order(k || null)(a) - SHOP.order(k || null)(b));
+    return `${sel ? '' : `<div class="ch" style="margin:14px 0 6px">${esc(storeName(k))}</div>`}
+      <ul class="shop-list">${rows.map(r => rowHtml(r, k || null)).join('')}</ul>`;
+  });
+
+  const chips = [{ id: null, name: 'All' }, ...state.stores].map(s =>
+    `<button class="chip${(s.id ?? null) === sel ? ' on' : ''}" data-store="${s.id ?? ''}">${esc(s.name)}</button>`).join('');
+
+  const hasAisles = sel && state.shopAisles.some(a => a.store_id === sel);
+
+  $('#bento').innerHTML = `<div class="col">
+    <section class="card">
+      <div class="chips">${chips}</div>
+      <form id="shop-add" autocomplete="off">
+        <input id="shop-in" placeholder='Add: "milk eggs 2 lbs ground beef"' enterkeyhint="done">
+        <button type="submit">Add</button>
+      </form>
+      ${need.length ? `<div class="ch" style="margin-top:12px">${need.length} to get${sel && !hasAisles ? ' · no aisle map for this store yet' : ''}</div>` : ''}
+      ${need.length ? blocks.join('') : `<div class="soon" style="padding:26px 12px;margin-top:12px"><b>Nothing to get</b><span>Add something above, or text the family number.</span></div>`}
+      ${got.length ? `<div class="ch" style="margin:14px 0 6px">Got · ${got.length}</div>
+        <ul class="shop-list">${got.map(r => rowHtml(r, r.store_id)).join('')}</ul>` : ''}
+      ${items.length ? `<div class="acts" style="margin-top:14px">
+        <button type="button" id="shop-done" ${got.length ? '' : 'disabled'}>Done shopping</button>
+        <button type="button" id="shop-clear" class="danger">Clear ${sel ? esc(storeName(sel)) : 'everything'}</button>
+      </div>` : ''}
+    </section>
+  </div>`;
+
+  $$('#bento [data-store]').forEach(b => b.onclick = () => { state.shopStore = b.dataset.store || null; render(); });
+  $('#shop-add').onsubmit = async e => { e.preventDefault(); const v = $('#shop-in').value.trim(); if (!v) return; $('#shop-in').value = ''; await SHOP.add(v); };
+  $$('#bento [data-tick]').forEach(b => b.onclick = () => SHOP.toggle(b.dataset.tick));
+  $$('#bento [data-x]').forEach(b => b.onclick = () => SHOP.remove(b.dataset.x));
+  const done = $('#shop-done'); if (done) done.onclick = () => SHOP.clear(sel, true);
+  const clr = $('#shop-clear'); if (clr) clr.onclick = () => {
+    /* One confirmation, naming what is about to go. Recoverable either way,
+       but a whole list is worth a second tap. */
+    if (confirm(`Clear ${sel ? storeName(sel) : 'the whole list'} — ${items.length} item${items.length === 1 ? '' : 's'}? They move to history, not gone.`)) SHOP.clear(sel, false);
+  };
+}
+
 function renderPlaceholder(){
   const copy = {
     shopping:['Shopping list','A shared, checkable list. Add by typing or by texting the family number. Auto-generated from the week\'s meal plan once Meals is built.'],
@@ -663,8 +841,9 @@ $$('#viewbar button').forEach(b => b.onclick = () => {
   render();
 });
 
-$$('#tabbar button').forEach(b => b.onclick = () => {
+$$('#tabbar button').forEach(b => b.onclick = async () => {
   state.module = b.dataset.mod;
+  if (state.module === 'shopping') await SHOP.load();
   $$('#tabbar button').forEach(x => x.setAttribute('aria-current', String(x === b)));
   render();
 });
@@ -1126,6 +1305,10 @@ function checkRollover(){
   render();
 }
 document.addEventListener('visibilitychange', () => {
+  // The list changes under you while someone else shops. Re-read on return.
+  if (document.visibilityState === 'visible' && state.module === 'shopping' && !state.demo) {
+    SHOP.load().then(render);
+  }
   if (!document.hidden) checkRollover();
 });
 window.addEventListener('focus', checkRollover);
