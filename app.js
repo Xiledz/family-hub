@@ -1245,8 +1245,24 @@ async function initPush(){
     b.classList.remove('hide'); return;
   }
   if (!('Notification' in window) || !('PushManager' in window)) return;
-  if (Notification.permission === 'granted') return;
   if (Notification.permission === 'denied') return;
+
+  /* Permission granted is NOT the same as registered.
+     This used to `return` right here, and that was the whole bug: permission
+     is remembered by the browser forever, but the subscription lives in a
+     database row that can go missing — the subscribe() call failed the first
+     time, the server pruned the endpoint after a 410, the row was never
+     written because the upsert lost the network. In every one of those cases
+     the browser says "granted", the old code returned happy, and the device
+     was silently unreachable with no way back: the banner never showed again,
+     so the user could never retry.
+
+     push_subscriptions has zero rows for this household. This is very likely
+     why. Re-sync on every launch instead of trusting the permission flag. */
+  if (Notification.permission === 'granted') {
+    if (await syncPush()) return;
+    /* Fall through to the banner. Something is wrong that a tap might fix. */
+  }
 
   b.innerHTML = `<b>Reminders are off.</b> Turn them on to get alerts before events.
                  <button id="push-on" style="margin-left:6px;border:0;background:transparent;
@@ -1255,25 +1271,57 @@ async function initPush(){
   $('#push-on').onclick = enablePush;   // must be inside a user gesture — iOS requires it
 }
 
-async function enablePush(){
-  try {
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { toast('Reminders stay off'); return; }
-    $('#banner').classList.add('hide');
-    if (state.demo || !CONFIG.VAPID_PUBLIC) { toast('Reminders on (demo)'); return; }
+/* Make the database agree with what this browser actually has.
+   Returns true only if this device is genuinely registered and recorded.
 
+   Reuses the existing subscription when there is one, and creates one when
+   permission is already granted but the subscription has gone. That second
+   case needs no user gesture — the gesture was for requestPermission(), and
+   that has already happened. */
+async function syncPush(){
+  if (state.demo || !CONFIG.VAPID_PUBLIC || !state.me) return false;
+  try {
     const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlB64(CONFIG.VAPID_PUBLIC)
-    });
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64(CONFIG.VAPID_PUBLIC)
+      });
+    }
     const j = sub.toJSON();
-    await state.db.from('push_subscriptions').upsert({
+    /* onConflict endpoint, so re-running this is free — and it re-points the
+       device at whoever is signed in as "me" now, which is what you want on a
+       personal phone. On a shared tablet the last person to open it owns the
+       alerts; that is a real limitation, not an oversight. */
+    const { error } = await state.db.from('push_subscriptions').upsert({
       household_id: CONFIG.HOUSEHOLD_ID, member_id: state.me.id,
       endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth,
       user_agent: navigator.userAgent
     }, { onConflict: 'endpoint' });
-    toast('Reminders on');
+    if (error) { console.warn('push upsert failed', error); return false; }
+    return true;
+  } catch (err) {
+    console.warn('push sync failed', err);
+    return false;
+  }
+}
+
+async function enablePush(){
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('Reminders stay off'); return; }
+    if (state.demo || !CONFIG.VAPID_PUBLIC) {
+      $('#banner').classList.add('hide'); toast('Reminders on (demo)'); return;
+    }
+    if (await syncPush()) {
+      $('#banner').classList.add('hide');
+      toast('Reminders on');
+    } else {
+      /* Leave the banner up. Saying "on" when the row did not land is how a
+         device ends up believing it is registered when nothing can reach it. */
+      toast('Could not turn on reminders — try again');
+    }
   } catch (err) { console.error(err); toast('Could not turn on reminders'); }
 }
 
