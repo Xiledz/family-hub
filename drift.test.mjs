@@ -55,6 +55,63 @@ if (i > 0 && j > i) {
   }
 }
 
+/* ===========================================================================
+ * The delivery chain is the SECOND thing that exists twice.
+ *
+ * deliver.ts is copied verbatim into both edge functions, for the same reason
+ * parse.js is: Supabase's bundler refuses remote hosts and its in-browser
+ * editor loses second files on deploy.
+ *
+ * Two copies of "how do we reach this person" drifting apart is quieter than
+ * a parser drifting, and worse: the reminder would find Bryce through Jess
+ * and the morning digest would not, and the only symptom is a kid who
+ * sometimes gets told and sometimes does not.
+ * ========================================================================= */
+const DSTART = '/* ============================================================================\n * Family Hub — the delivery chain';
+const DEND   = '/* ===== end delivery chain';
+
+const deliverSrc = readFileSync('./deliver.ts', 'utf8');
+
+for (const fn of ['./dispatch-reminders.ts', './morning-digest.ts']) {
+  const src = readFileSync(fn, 'utf8');
+  const a = src.indexOf(DSTART);
+  const b = src.indexOf(DEND);
+  const label = fn.replace('./', '');
+
+  check(`${label} contains the delivery chain`, a >= 0 && b > a,
+        'markers not found — was the block edited by hand?');
+
+  if (a >= 0 && b > a) {
+    const inlined  = src.slice(a, b).trimEnd();
+    const expected = deliverSrc.slice(deliverSrc.indexOf(DSTART),
+                                     deliverSrc.indexOf(DEND)).trimEnd();
+    check(`${label} delivery chain matches deliver.ts`, inlined === expected);
+
+    if (inlined !== expected) {
+      const x = expected.split('\n'), y = inlined.split('\n');
+      for (let k = 0; k < Math.max(x.length, y.length); k++) {
+        if (x[k] !== y[k]) {
+          console.log(`      first difference at line ${k + 1}:`);
+          console.log(`        deliver.ts: ${JSON.stringify(x[k])}`);
+          console.log(`        ${label}: ${JSON.stringify(y[k])}`);
+          break;
+        }
+      }
+      console.log('\n      FIX: re-copy deliver.ts into the function and redeploy.');
+    }
+  }
+}
+
+/* Both functions must also agree on which build of the chain they carry. */
+{
+  const stamp = (f) => (readFileSync(f, 'utf8').match(/const DELIVER_BUILD = '([^']+)'/) || [])[1];
+  const a = stamp('./deliver.ts');
+  const b = stamp('./dispatch-reminders.ts');
+  const c = stamp('./morning-digest.ts');
+  check('delivery build stamps agree', a && a === b && a === c,
+        `deliver.ts:${a} dispatch:${b} digest:${c}`);
+}
+
 // The role vocabulary must also match what the database will accept.
 const dbRoles = ['going','driving','dropoff','pickup','helping','optional'];
 const declared = (repoParser.match(/const ROLE_VALUES = \[([^\]]+)\]/) || [])[1];

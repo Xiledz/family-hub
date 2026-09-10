@@ -45,13 +45,18 @@ t('past-year rollover', core(P('Taxes due Apr 15')),
   {title:'Taxes due',date:'2027-04-15',start:null,end:null,allDay:true,member:null,lead:30});
 
 // warnings
-t('recurrence flagged', P('Soccer every Tuesday 5:30 Noah').warnings.length>0, true);
+// Recurrence used to raise a warning because it was unsupported. It is now
+// parsed into a real rule, so the correct assertion is the opposite: a clean
+// parse with no warning, and a series the caller can actually save.
+t('recurrence parsed, not warned', P('Soccer every Tuesday 5:30 Noah').warnings.length, 0);
+t('recurrence rule', JSON.stringify(P('Soccer every Tuesday 5:30 Noah').repeat),
+  JSON.stringify({freq:'weekly',interval:1,days:[2],until:null}));
 t('past time flagged', P('Lunch 9am Erich').warnings.some(w=>/already passed/.test(w)), true);
 t('no title flagged', P('tomorrow 5pm').title, 'Untitled');
 
 // describe()
 t('describe', dsc(P('Soccer practice Thursday 5:30 Noah remind 1 hour before')),
-  {day:'Thursday, Aug 20', time:'5:30 PM', who:'Noah', lead:'alert 1h before'});
+  {day:'Thursday, Aug 20', time:'5:30 PM', who:'Noah', lead:'alert 1h before', repeat:null});
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

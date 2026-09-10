@@ -1,49 +1,33 @@
 /* ===========================================================================
  * INTENT ROUTING
  *
- * Until this existed, every text became a calendar event — which is exactly
- * why the number could not be given to anyone else: "milk" would quietly turn
- * up on the calendar and nobody would notice until the week was wrong.
+ * One text, several possible meanings. Until routing existed every message
+ * became a calendar event, which is exactly why the number could not be
+ * handed to anyone else: "milk" would quietly turn up on the calendar and
+ * nobody would notice until the week was wrong.
  *
  * The two failures are not equal. Filing an event as groceries loses an
- * appointment. Filing groceries as an event clutters the calendar. Both are
- * bad enough that where the message is genuinely ambiguous, the right answer
- * is to ask — once — rather than guess quietly.
+ * appointment. Filing groceries as an event clutters a calendar. Both are
+ * bad enough that where a message is genuinely ambiguous the answer is to
+ * ask, once, rather than guess quietly.
  *
- * Constants are read out of sms-inbound.ts rather than copied, so this tests
- * what actually deploys.
+ * WHAT CHANGED, AND WHY IT MATTERED
+ *   This file used to re-implement the handler's if-chain by hand, with a
+ *   comment claiming it "mirrors the handler". It did not. The real chain
+ *   runs the correction matcher and the edit matcher BETWEEN the scoped list
+ *   and the shopping intents; the copy had neither. So "delete that" routed
+ *   to shopping here and to the calendar in production, and every test on
+ *   this page passed anyway — a test that reimplements the thing it tests
+ *   will agree with itself forever.
+ *
+ *   routeIntent now lives in parse.js and the handler calls it. This file
+ *   imports the real function. When routing order changes, this moves or it
+ *   fails; it can no longer quietly disagree.
  * ========================================================================= */
-import { readFileSync } from 'fs';
-import { parseQuickAdd, parseShopping } from './parse.js';
+import { routeIntent } from './parse.js';
 
-const src = readFileSync('./sms-inbound.ts', 'utf8');
-const grab = name => {
-  const m = src.match(new RegExp(`^const ${name}\\s*=\\s*(/.*/[a-z]*);`, 'm'));
-  if (!m) throw new Error(`${name} not found in sms-inbound.ts`);
-  return eval(m[1]);
-};
-const SHOP_STRONG = grab('SHOP_STRONG');
-const SHOP_WEAK   = grab('SHOP_WEAK');
-const LIST_CMD    = grab('LIST_CMD');
-const SHOP_REMOVE = grab('SHOP_REMOVE');
-const SHOP_GOT    = grab('SHOP_GOT');
-const LIST_SCOPED = grab('LIST_SCOPED');
-const TRIP_DONE   = grab('TRIP_DONE');
-const CLEAR_VERB  = grab('CLEAR_VERB');
-const BULK_FILLER = grab('BULK_FILLER');
+const NOW = new Date('2026-09-10T12:00:00Z');   // Thursday
 
-import { storeTerms } from './parse.js';
-const storeIn = t => (storeTerms(STORES).find(({ text }) =>
-  new RegExp(`\\b${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(t)) || {}).store || null;
-
-const ROSTER = [
-  { name: 'Erich', aliases: ['dad'] }, { name: 'Jess', aliases: ['mom'] },
-  { name: 'Addie', aliases: [] }, { name: 'Bryce', aliases: [] },
-];
-const NOW = new Date('2026-08-26T10:00:00');
-
-/* Mirrors the handler. If the handler changes shape and this stops matching,
-   that mismatch is the point. */
 const STORES = [
   { id: 'h1', name: 'HEB Harpers Trace', aliases: ['harpers','harper','harpers trace','242'] },
   { id: 'h2', name: 'HEB on 1488',       aliases: ['1488','heb 1488','north woodlands'] },
@@ -52,39 +36,47 @@ const STORES = [
   { id: 's',  name: 'Sams Club',         aliases: ['sams',"sam's"] },
 ];
 
+const ROSTER = [
+  { name: 'Erich', aliases: ['dad'] }, { name: 'Jess', aliases: ['mom'] },
+  { name: 'Addie', aliases: [] },      { name: 'Bryce', aliases: [] },
+];
+
+/* Collapse the routed answer to the short label these tests were written
+   against, so the existing cases below still read the way they did. */
 function route(body) {
-  if (LIST_CMD.test(body)) return 'show';
-  if (TRIP_DONE.test(body)) return 'trip';
-
-  /* A clearing verb followed by nothing but a store and filler is bulk. The
-     same verb followed by an item name is not. Checked BEFORE the scoped
-     view, or "remove HEB list" reads as "show me the HEB list" — nearly the
-     same words, opposite outcomes. */
-  const cv = body.match(CLEAR_VERB);
-  if (cv) {
-    const st = storeIn(cv[1] || '');
-    let rest = cv[1] || '';
-    if (st) for (const { text } of storeTerms([st]))
-      rest = rest.replace(new RegExp(`\\b${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'ig'), ' ');
-    rest = rest.replace(BULK_FILLER, ' ').replace(/[^a-z0-9 ]/gi, ' ').trim();
-    if (!rest) return st ? `clear:${st.name}` : 'clear:all';
+  const r = routeIntent(body, { stores: STORES, members: ROSTER, now: NOW, me: 'Erich' });
+  switch (r.intent) {
+    case 'show':        return r.store ? `show:${r.store.name}` : 'show';
+    case 'trip_done':   return 'trip';
+    case 'clear':       return r.store ? `clear:${r.store.name}` : 'clear:all';
+    case 'shop_remove': return 'remove';
+    case 'shop_got':    return 'got';
+    /* A correction or an edit cannot be settled from the text alone. These
+       tests assert the OUTCOME, which is what the sender experiences: the
+       handler goes and looks, finds nothing that answers, and falls through.
+       Which stage it was diverted to is asserted separately, below. */
+    case 'stateful':    return label(r.otherwise);
+    default:            return r.intent;
   }
+}
 
-  const ls = body.match(LIST_SCOPED);
-  if (ls && storeIn(ls[1])) return `show:${storeIn(ls[1]).name}`;
-
-  if (SHOP_REMOVE.test(body)) return 'remove';
-  if (SHOP_GOT.test(body))    return 'got';
-  const p = parseQuickAdd(body, { members: ROSTER, now: NOW, me: 'Erich' });
-  const hasWhen = p.matched.includes('date') || p.matched.includes('time') || !!p.repeat;
-  if (SHOP_STRONG.test(body)) return 'shop';
-  if (SHOP_WEAK.test(body) && !hasWhen) {
-    const probe = parseShopping(body, { stores: STORES });
-    if (probe.items.some(i => i.category !== 'other')) return 'shop';
+function label(r) {
+  switch (r.intent) {
+    case 'show':        return r.store ? `show:${r.store.name}` : 'show';
+    case 'trip_done':   return 'trip';
+    case 'clear':       return r.store ? `clear:${r.store.name}` : 'clear:all';
+    case 'shop_remove': return 'remove';
+    case 'shop_got':    return 'got';
+    case 'stateful':    return label(r.otherwise);
+    default:            return r.intent;
   }
-  if (!hasWhen && parseShopping(body, { stores: STORES }).store) return 'shop';
-  if (!hasWhen && !p.people.length)     return 'ask';
-  return 'event';
+}
+
+/* Which stage the handler is sent to FIRST, and what it falls back to. This
+   is the half the old hand-written copy did not have at all. */
+function diverts(body) {
+  const r = routeIntent(body, { stores: STORES, members: ROSTER, now: NOW, me: 'Erich' });
+  return r.intent === 'stateful' ? `${r.why}>${label(r.otherwise)}` : label(r);
 }
 
 let pass = 0, fail = 0;
@@ -110,6 +102,8 @@ is('groceries: milk and eggs', 'shop');
 /* A day or a clock makes it an event no matter how it opens. "add dentist
    Thursday 3pm" is an appointment, not a grocery run. */
 is('add dentist Thursday 3pm', 'event');
+/* A modal plus a clock is still an appointment. "need to" is a todo frame,
+   but todos have no due TIME, so routing this as one would drop the 6am. */
 is('need to leave for the airport Friday 6am', 'event');
 is('get Addie from practice Thursday 5pm', 'event');
 
@@ -121,7 +115,11 @@ is('Soccer Thursday 6-8pm, Addie going, mom there, dad back', 'event');
 
 /* Named people make it an event even with no time — "Addie recital" is not
    something you put in a cart. */
-is('Addie recital', 'event');
+/* DELIBERATE CHANGE. A name plus a bare noun used to become an all-day
+   event on that person's calendar. With todos in the mix it is genuinely
+   three ways ambiguous — a chore, an event, or something to buy — and the
+   old guess was almost never what anyone meant. Ask instead. */
+is('Addie recital', 'ask');
 
 // --- commands --------------------------------------------------------------
 is('list', 'show');
@@ -206,6 +204,66 @@ is('remove milk', 'remove');
 is('delete haribo', 'remove');
 is('remove milk and eggs', 'remove');
 is('clear the milk', 'remove');
+
+
+/* --- ROUTING ORDER --------------------------------------------------------
+   The handler runs corrections, then remove/got, then edits, then the final
+   call. The old hand-written router in this file had neither the correction
+   stage nor the edit stage, so it agreed with itself while production did
+   something else. These pin the real order.
+
+   Read "correction>remove" as: goes looking for something to correct, and if
+   nothing answers, takes it off the shopping list. */
+const order = (body, want) => {
+  const got = diverts(body);
+  const ok = got === want;
+  console.log((ok ? 'PASS  ' : 'FAIL  ') + `order ${JSON.stringify(body)}`);
+  if (!ok) { console.log(`      got  "${got}"\n      want "${want}"`); fail++; } else pass++;
+};
+
+/* "no" opens a correction AND is a remove verb. Correction wins the look;
+   remove catches it when there is nothing to correct. Get this backwards and
+   "no bike" stops taking bike off the list. */
+order('no bike',        'correction>remove');
+order('delete that',    'correction>remove');
+order('no make it 4',   'correction>remove');
+order('scratch that',   'correction>remove');
+
+/* "to" and "for" make almost anything look like a move, so the edit matcher
+   is gated on an actual move verb. Without that gate, what sits behind it is
+   a fuzzy title match at 0.5 that REWRITES an event's date — "tell Bryce to
+   clean his room" could move a dentist appointment.
+
+   The gate shipped with its stems written /\b(mov|chang|reschedul)\b/, and a
+   trailing \b after a stem cannot match "moved" or "change" at all. Only
+   push, shift and now ever got through, so editing by text was mostly dead
+   in production. These pin both halves: the verbs that must open the gate,
+   and the sentences that must not. */
+order('practice is moved to 6',      'edit>ask');
+order('move soccer to 7',            'edit>ask');
+order('change dentist to Friday',    'edit>event');
+order('reschedule soccer to 7',      'edit>ask');
+/* KNOWN GAP, pinned so it is not mistaken for correct: EDIT_RE only
+   understands "to" and "for", so "soccer is now AT 7" — a perfectly normal
+   way to say it — never reaches the edit matcher and files a second event
+   instead. Widening EDIT_RE to accept "at" is safe now that the verb gate
+   exists, but it touches every correction test and wants its own pass. */
+order('soccer is now at 7',          'event');
+
+order('add ziploc bags to the shopping list',      'shop');
+order('need to leave for the airport Friday 6am',  'event');
+
+/* These two were 'event' before todos existed, and the old answer was simply
+   wrong — they are chores, and now route as chores. */
+order('tell Bryce to clean his room',              'todo');
+order('remind me to call the dentist',             'todo');
+
+/* Plain messages are not diverted at all. */
+order('buy milk',            'shop');
+order('remove milk',         'remove');
+order('list',                'show');
+order('Soccer Thursday 6pm', 'event');
+order('harpers list',        'show:HEB Harpers Trace');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

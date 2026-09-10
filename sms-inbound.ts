@@ -81,6 +81,9 @@ const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return
  * @param {number} opts.defaultLead the member's default reminder lead, minutes
  */
 function parseQuickAdd(input, opts = {}) {
+
+  /* Set by "tonight": a suggested hour, applied only if no clock is found. */
+  let tonightDefault = false;
   /* Members arrive either as plain names or as {name, aliases}. Aliases exist
      because a nine-year-old texts "mom is driving", not "Jess is driving", and
      a name the parser cannot resolve is a role silently dropped on the floor.
@@ -234,7 +237,11 @@ function parseQuickAdd(input, opts = {}) {
   // ---- 4. relative days -------------------------------------------------
   if (!out.date) {
     if ((m = findFree(/\btoday\b/i)))                    { out.date = ymd(now); take(m,'date'); }
-    else if ((m = findFree(/\btonight\b/i)))             { out.date = ymd(now); out.start = out.start||'19:00'; take(m,'date'); }
+    /* "tonight" fixes the DAY here and only suggests an hour. Setting the
+       clock at this point ran before the time section, so "book club tonight
+       at 8" kept 7pm and quietly ignored the 8 — an hour early, every time.
+       The default is applied after the clock has had its chance. */
+    else if ((m = findFree(/\btonight\b/i)))             { out.date = ymd(now); tonightDefault = true; take(m,'date'); }
     else if ((m = findFree(/\btomorrow\b|\btmrw\b/i)))   { out.date = ymd(addDays(now,1)); take(m,'date'); }
     else if ((m = findFree(/\bday\s+after\s+tomorrow\b/i))) { out.date = ymd(addDays(now,2)); take(m,'date'); }
     else if ((m = findFree(/\bin\s+(\d+)\s+(day|days|week|weeks)\b/i))) {
@@ -316,22 +323,29 @@ function parseQuickAdd(input, opts = {}) {
      contains "am" and means nothing of the sort. Where am/pm genuinely
      qualifies a number, the explicit branch below has already caught it. */
   const cueAm = AM_CUE.test(raw), cuePm = PM_CUE.test(raw);
+  /* Was a cue actually USED to settle an ambiguous hour? "Take out trash
+     Tuesday morning at 7" consults it — 7 could be either — so the word did
+     a job and is not part of the name. "Date night Friday 7pm" never
+     consults it, because 7pm says so itself, and there "night" IS the name.
+     Consuming the cue on that basis is the only rule that gets both. */
+  let cueUsed = false;
 
   const setBare = (h, mi) => {
     if (h === 12) {
-      if (cueAm) { out.start = `00:${pad(mi)}`; return; }
-      if (cuePm) { out.start = `12:${pad(mi)}`; return; }
+      if (cueAm) { out.start = `00:${pad(mi)}`; cueUsed = true; return; }
+      if (cuePm) { out.start = `12:${pad(mi)}`; cueUsed = true; return; }
       out.start = `12:${pad(mi)}`;
       out.ambiguousTime = { kind: 'noon', am: `00:${pad(mi)}`, pm: `12:${pad(mi)}` };
       return;
     }
     if (h >= 1 && h <= 6) {
+      if (cueAm) cueUsed = true;
       out.start = cueAm ? `${pad(h)}:${pad(mi)}` : `${pad(h + 12)}:${pad(mi)}`;
       return;
     }
     if (h >= 7 && h <= 11) {
-      if (cueAm) { out.start = `${pad(h)}:${pad(mi)}`; return; }
-      if (cuePm) { out.start = `${pad(h + 12)}:${pad(mi)}`; return; }
+      if (cueAm) { out.start = `${pad(h)}:${pad(mi)}`; cueUsed = true; return; }
+      if (cuePm) { out.start = `${pad(h + 12)}:${pad(mi)}`; cueUsed = true; return; }
       /* Both readings are real, so this is only a placeholder until the
          question comes back answered. It leans the way the hour usually
          falls: 7 and 8 are evening activities, 9 through 11 are morning
@@ -357,6 +371,10 @@ function parseQuickAdd(input, opts = {}) {
       setBare(+m[1], +m[2]); take(m,'time');
     }
   }
+  /* "tonight" with no clock still means the evening. With a clock, the clock
+     wins — which is the whole point of deferring this. */
+  if (tonightDefault && !out.start) out.start = '19:00';
+
   // An all-day event has no clock, so there is nothing to be ambiguous about.
   if (out.allDay || !out.start) out.ambiguousTime = null;
 
@@ -508,6 +526,18 @@ function parseQuickAdd(input, opts = {}) {
     // "Mom and Dad going" leaves a naked "and" once both names are consumed.
     .replace(/^\s*(?:and|&|with|plus|,)\s*/i, '')
     .replace(/\s*(?:and|&|with|plus|,)\s*$/i, '')
+    /* A cue word that did its job settling am-vs-pm is not part of what the
+       thing is called: "Take out trash every Tuesday MORNING at 7" was
+       titling itself "Take out trash morning".
+       But a cue that OPENS the title is the name — "dinner with the Smiths",
+       "morning walk" — so only a trailing one is dropped, and only when a
+       clock was actually resolved. */
+    .replace(cueUsed ? new RegExp(AM_CUE.source + '|' + PM_CUE.source, 'gi') : /(?!)/g,
+             (mm, off) => (off === 0 ? mm : ' '))
+    /* Trailing punctuation left behind once a span is cut out of the middle
+       of a sentence: "…at 7." loses "at 7" and keeps the full stop. */
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/[\s.,;:!?-]+$/, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (!out.title) { out.title = 'Untitled'; out.warnings.push('No title found — add one before saving.'); }
@@ -1266,6 +1296,422 @@ function parseShopping(input, opts = {}) {
   return out;
 }
 
+/* ===========================================================================
+ * 12. INTENT ROUTING
+ *
+ * One text, several possible meanings. Until this existed every message
+ * became a calendar event, which is exactly why the number could not be
+ * given to anyone else: "milk" would quietly turn up on the calendar and
+ * nobody would notice until the week was wrong.
+ *
+ * The two failures are not equal. Filing an event as groceries loses an
+ * appointment. Filing groceries as an event clutters a calendar. Both are
+ * bad enough that where a message is genuinely ambiguous the answer is to
+ * ask, once, rather than guess quietly.
+ *
+ * WHY THIS LIVES HERE AND NOT IN THE HANDLER
+ *   It used to live in the handler as a chain of if-blocks, and route.test
+ *   re-implemented that chain BY HAND to test it. The comment on the copy
+ *   said "mirrors the handler". It did not: the real chain runs the
+ *   correction and edit matchers between the scoped list and the shopping
+ *   intents, and the copy had neither, so "delete that" routed one way in
+ *   the test and another way in production. A test that reimplements the
+ *   thing it is testing will agree with itself forever.
+ *
+ * WHAT IS AND IS NOT DECIDED HERE
+ *   Decidable from the text alone: the list commands, bulk clear, the scoped
+ *   view, remove/got, and the final shopping-vs-event-vs-ask call.
+ *
+ *   NOT decidable here: corrections and edits. "no, make it 4" means nothing
+ *   without knowing what just happened, and "practice is moved to 6" needs
+ *   the event looked up before you know whether it is an edit at all. Those
+ *   return intent 'stateful' with the reason, and the handler resolves them
+ *   against sms_last_action and the calendar — and falls through to the rest
+ *   of the chain when nothing matches, which is why 'stateful' carries the
+ *   routing that WOULD apply if it does not.
+ * ========================================================================= */
+
+const ROUTE_RE = {
+  SHOP_STRONG: /\b(?:shopping\s+list|grocery\s+list|groceries)\b|^(?:buy|shop)\b/i,
+  SHOP_WEAK  : /^(?:get|grab|need|we\s+need|i\s+need|add|pick\s*up|order)\b/i,
+  /* NOT take\s+out on its own: taking out the trash is the archetypal
+     chore, and with trash bags on the shopping list the partial matcher
+     would have removed them instead. 'take off' and 'take out of' still
+     mean the list. */
+  SHOP_REMOVE: /^(?:remove|delete|take\s+off|take\s+out\s+of|drop|scratch|erase|clear|wipe|get\s+rid\s+of|no)\s+(.+)$/i,
+  SHOP_GOT   : /^(?:got|bought|picked\s+up|grabbed|have)\s+(.+)$/i,
+  LIST_CMD   : /^(?:list|the\s+list|shopping(?:\s+list)?|grocer(?:y|ies)(?:\s+list)?|what'?s?\s+on\s+the\s+list)\s*\??$/i,
+  LIST_SCOPED: /^(?:show\s+|see\s+|what'?s?\s+on\s+)?(?:the\s+)?(.+?)(?:'s)?\s+list\s*\??$/i,
+  TRIP_DONE  : /^(?:new\s+(?:list|trip)|start\s+(?:a\s+)?new\s+(?:list|trip)|done(?:\s+shopping)?|finished(?:\s+shopping)?)\s*[.!]?$/i,
+  CLEAR_VERB : /^(?:clear|empty|wipe|reset|remove|delete|erase)\b\s*(.*)$/i,
+  BULK_FILLER: /\b(?:the|a|an|whole|entire|all|everything|every|of|from|out|off|items?|things?|stuff|shopping|grocery|groceries|lists?|please)\b/gi,
+  KILL       : /^(?:delete|cancel|remove|undo|drop|forget)\s*(?:that|it|the last one|last one|last)?[\s.!]*$/i,
+  FIX_PREFIX : /^(?:no+|nope|actually|wait|sorry|oops|whoops|correction|scratch that|nvm|nevermind|never mind)\b[\s,.:;!-]*/i,
+  FIX_VERB   : /^(?:make (?:it|that)|change (?:it|that)(?:\s+to)?|change to|move (?:it|that) to|set (?:it|that) to|it'?s|its)\b[\s,:-]*/i,
+  EDIT_RE    : /^(?:(?:can you\s+)?(?:move|change|reschedule|resched|shift|push)\s+)?(.+?)\s+(?:is\s+)?(?:moved|changed|rescheduled|shifted|pushed|now)?\s*(?:to|for)\s+(.+)$/i,
+  /* EDIT_RE alone matches nearly any sentence containing "to" or "for".
+     The handler has always required a move verb as well, and the extraction
+     dropped it. What sits behind this gate is a fuzzy title match at 0.5
+     that REWRITES an event's date, so "tell Bryce to clean his room" could
+     move a dentist appointment. The gate is the only thing preventing it. */
+  EDIT_VERB  : /\b(?:move[sd]?|moving|chang(?:e[sd]?|ing)|reschedul(?:e[sd]?|ing)|resched|shift(?:s|ed|ing)?|push(?:es|ed|ing)?|now)\b/i
+,
+
+  /* --- TODOS -----------------------------------------------------------
+     "my list" is the sender's todos; bare "list" stays shopping, because
+     the family already learned it that way. */
+  TODO_LIST  : /^(?:my\s+)?(?:to-?\s?dos?|tasks|chores|my\s+list|what(?:'s| do i have)\s+to\s+do)\s*\??$/i,
+
+  /* Completion. Bare "done" is NOT here — TRIP_DONE owns it at stage 0 and
+     changing that would clear someone's shopping list when they meant a
+     chore. The nag text tells people to reply DID for exactly this reason. */
+  TODO_DONE  : /^(?:did|done\s+with|finished|completed|checked\s+off)\s+(.+)$/i,
+  DID_LAST   : /^(?:did(?:\s+it)?|done\s+with\s+(?:it|that)|finished(?:\s+it)?)[\s.!]*$/i,
+
+  /* A deadline, not an appointment. "by Friday" is a due date; "by the
+     register" is not, which is why the tail must parse to a bare date with
+     no time and no title of its own. "before" is deliberately absent — it
+     is overwhelmingly used for events ("leave before 7"). */
+  DEADLINE   : /\b(?:by|due|no\s+later\s+than)\s+(?:the\s+)?([^:,]+?)\s*(?::|,|$)/i,
+
+  /* Someone is being told to do something. */
+  TODO_MODAL : /\b(?:needs?\s+to|has\s+to|have\s+to|should|must|gotta|ought\s+to)\s+(.+)$/i,
+  TODO_TELL  : /^(?:tell|ask|have|get|remind)\s+(.+?)\s+to\s+(.+)$/i,
+  TODO_SELF  : /^(?:remind\s+me\s+to|i\s+(?:need|have)\s+to|i\s+should|i\s+gotta)\s+(.+)$/i,
+  TODO_HOUSE : /^(?:we\s+(?:need|have)\s+to|someone|somebody|anyone)\s+(?:needs?\s+to\s+)?(.+)$/i,
+  TODO_TAG   : /^(?:to-?\s?do|task|chore)s?\s*:\s*(.+)$/i
+};
+
+/* Does this text name a store? Returns the store row or null. */
+function routeStoreIn(stores, text) {
+  const hit = storeTerms(stores || []).find(({ text: t }) =>
+    new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text));
+  return hit ? hit.store : null;
+}
+
+/* A clearing verb followed by nothing but a store and filler is a bulk clear.
+   The same verb followed by an item name is not. This is checked BEFORE the
+   scoped view or "remove HEB list" reads as "show me the HEB list" — nearly
+   the same words, opposite outcomes. */
+function bulkClearTarget(body, stores) {
+  const cv = body.match(ROUTE_RE.CLEAR_VERB);
+  if (!cv) return null;
+  const st = routeStoreIn(stores, cv[1] || '');
+  let rest = cv[1] || '';
+  if (st) for (const { text } of storeTerms([st])) {
+    rest = rest.replace(new RegExp(`\\b${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'ig'), ' ');
+  }
+  rest = rest.replace(ROUTE_RE.BULK_FILLER, ' ').replace(/[^a-z0-9 ]/gi, ' ').trim();
+  if (rest) return null;                       // named an item, not a bulk clear
+  return { store: st || null };
+}
+
+/* opts: { stores, members, now, me }
+   Returns { intent, ... }. The order here IS the handler's order; changing
+   one without the other is the bug this function exists to prevent.
+
+   `from` continues the chain past a stage that did not resolve. A correction
+   that names nothing falls through to shop_remove, NOT past it — getting
+   that wrong is how "no bike" would have stopped removing bike. */
+function routeIntent(body, opts = {}, from = 0) {
+  const text   = String(body || '').trim();
+  const stores = opts.stores || [];
+  const next   = () => routeIntent(text, opts, from + 1);
+
+  /* 0 */ if (from <= 0) {
+    if (ROUTE_RE.LIST_CMD.test(text))  return { intent: 'show', store: null };
+    /* "my list" / "todos" / "chores". Bare "list" stays shopping above,
+       because the family already learned it that way. */
+    if (ROUTE_RE.TODO_LIST.test(text)) return { intent: 'todo_show', who: opts.me || null };
+    if (ROUTE_RE.TRIP_DONE.test(text)) return { intent: 'trip_done', store: routeStoreIn(stores, text) };
+    const bulk = bulkClearTarget(text, stores);
+    if (bulk) return { intent: 'clear', store: bulk.store };
+    const ls = text.match(ROUTE_RE.LIST_SCOPED);
+    if (ls) {
+      const st = routeStoreIn(stores, ls[1]);
+      if (st) return { intent: 'show', store: st };
+      /* Not a store, so try a person. "Bryce's list" used to become an
+         EVENT titled "list" on Bryce's calendar. */
+      const who = whoIn(ls[1], opts.members || []);
+      if (who.length) return { intent: 'todo_show', who: who[0] };
+    }
+  }
+
+  /* 1 — a correction to whatever just happened. Runs before the edit matcher
+         on purpose: "no, make it 4" names no event, so the edit matcher would
+         either miss it or match something unrelated on the word "make". */
+  if (from <= 1) {
+    /* "did it" / "finished" with no object: only the last thing they were
+       told about can be meant. NOT bare "done" — TRIP_DONE owns that at
+       stage 0, and Jess replying "done" to Bryce's nag must not wipe her
+       shopping list. The nag text says to reply DID for exactly this. */
+    if (ROUTE_RE.DID_LAST.test(text)) {
+      return { intent: 'stateful', why: 'did', otherwise: routeIntent(text, opts, 2) };
+    }
+    const pre  = text.match(ROUTE_RE.FIX_PREFIX);
+    const rest = pre ? text.slice(pre[0].length).trim() : text;
+    if (pre || ROUTE_RE.FIX_VERB.test(rest) || ROUTE_RE.KILL.test(rest) || ROUTE_RE.KILL.test(text)) {
+      return { intent: 'stateful', why: 'correction', otherwise: routeIntent(text, opts, 2) };
+    }
+  }
+
+  /* 2 — off the shopping list. Before the calendar's delete, because
+         "remove milk" is almost never an appointment. */
+  if (from <= 2) {
+    /* Above shop_remove/got deliberately: "have Bryce clean the garage"
+       would otherwise read as "have <item>" and dead-end on the shopping
+       list. The "no bike" ordering already proved how much this matters. */
+    const td = text.match(ROUTE_RE.TODO_DONE);
+    if (td) return { intent: 'todo_done', text: td[1] };
+    if (todoStrong(text, opts)) return { intent: 'todo' };
+
+    const rm = text.match(ROUTE_RE.SHOP_REMOVE);
+    if (rm) return { intent: 'shop_remove', text: rm[1] };
+    const gt = text.match(ROUTE_RE.SHOP_GOT);
+    if (gt) return { intent: 'shop_got', text: gt[1] };
+  }
+
+  /* 3 — moving something already on the calendar. */
+  if (from <= 3) {
+    if (ROUTE_RE.EDIT_RE.test(text) && ROUTE_RE.EDIT_VERB.test(text)) {
+      return { intent: 'stateful', why: 'edit', otherwise: routeIntent(text, opts, 4) };
+    }
+  }
+
+  /* 4 — the final call. */
+  return routeTail(text, opts);
+}
+
+/* The final call, once corrections and edits have been ruled out. Split out
+   so 'stateful' can carry it: the handler falls through to exactly this when
+   no correction or edit actually resolves. */
+function routeTail(text, opts = {}) {
+  const stores = opts.stores || [];
+  const p = parseQuickAdd(text, {
+    members: opts.members || [], now: opts.now, me: opts.me
+  });
+  const hasWhen = p.matched.includes('date') || p.matched.includes('time') || !!p.repeat;
+
+  if (ROUTE_RE.SHOP_STRONG.test(text)) return { intent: 'shop' };
+
+  /* An imperative chore verb wins even against a clock. "Take out trash every
+     Tuesday morning at 7" is a chore that has a preferred hour, not an
+     appointment — and todos carry a due_time now, so the 7 is kept rather
+     than dropped. This is checked BEFORE the clock rule below. */
+  if (looksLikeTodo(text)) return { intent: 'todo' };
+
+  /* Everything else with a clock is an appointment, whatever frame wraps it.
+     "I need to leave for the airport Friday 6am" reads like a todo — "need
+     to" is a todo frame — but "leave" is not a chore, and the 6am is the
+     whole point of the message. */
+  if (p.matched.includes('time')) return { intent: 'event' };
+
+  if (ROUTE_RE.SHOP_WEAK.test(text) && !hasWhen) {
+    const probe = parseShopping(text, { stores });
+    if (probe.items.some(i => i.category !== 'other')) return { intent: 'shop' };
+  }
+
+  if (!hasWhen && parseShopping(text, { stores }).store) return { intent: 'shop' };
+
+  /* Name plus nothing is now three-way ambiguous — "Bryce garage" could be a
+     chore, an event, or a shopping run. Ask, rather than file an all-day
+     event on Bryce's calendar, which is what used to happen and was almost
+     never what anyone meant. */
+  if (!hasWhen) return { intent: 'ask' };
+  return { intent: 'event' };
+}
+
+/* ===========================================================================
+ * 13. TODOS
+ *
+ * A todo is a verb phrase somebody owes. An event is a noun with a clock.
+ * "Soccer Thursday 5:30" is an event; "clean your room by Friday" is a todo;
+ * "buy milk" is shopping. The three are told apart by the shape of the
+ * sentence, and where the shape is genuinely ambiguous the answer is to ask.
+ *
+ * The deadline preposition is the strongest signal there is and it is the
+ * one people actually use. Events say AT and ON — "practice at 5", "dentist
+ * on Thursday". Todos say BY — "clean your room by Friday". That single word
+ * separates them cleanly, but only if the thing after it is a bare date:
+ * "pick up milk by the register" is shopping and must stay shopping.
+ * ========================================================================= */
+
+/* The imperative verbs a chore starts with. Every word here was checked
+   against the live routing chain: anything that also opens a shopping or
+   remove or edit phrase is deliberately absent, because those already have
+   an owner and stealing them would break behaviour the family relies on.
+
+   Missing on purpose: get, grab, pick up, add, need, order, buy (shopping);
+   remove, delete, drop, clear, wipe, erase, scratch, cancel (remove/kill);
+   move, change, reschedule, shift, push (edit); have, got, bought (got);
+   show, see, list (the list). So "pick up the dry cleaning" routes to
+   shopping — the cost of "pick up" belonging to groceries. Say "needs to
+   pick up the dry cleaning" and it lands right. */
+const TODO_VERBS = [
+  'clean','tidy','wash','fold','iron','vacuum','sweep','mop','dust',
+  'mow','rake','water','weed','feed','walk','bathe','brush',
+  'take out','throw out','throw away','put away','put up','hang','pack','unpack',
+  'load','unload','fix','repair','replace','install','paint','organize','sort',
+  'finish','study','read','write','call','text','email','pay',
+  /* NOT 'practice'. It is a chore verb ("practice piano") and also the
+     noun this family has most on the calendar — soccer practice, orchestra
+     practice. "Practice is moved to 6" was routing as a chore. A word that
+     is both loses, because the calendar collision is the expensive one. */
+  'return','renew','book','schedule','sign','fill out','submit','print',
+  'mail','ship','drop off','look up','check','research','plan','set up','start',
+];
+const TODO_VERB_RE = new RegExp(
+  '^(?:please\\s+|can\\s+you\\s+)?(?:' +
+  TODO_VERBS.map(v => v.replace(/ /g, '\\s+')).join('|') +
+  ')\\b\\s+\\S', 'i');
+
+/* A deadline only counts when what follows is a bare date. "by Friday" is a
+   due date. "by the register", "by the dozen", "by 8pm" are not — the last
+   one has a time, which makes it an event with a reminder, and the schema
+   has no due time so that is the honest answer. */
+function deadlineOf(text, opts) {
+  const m = String(text).match(ROUTE_RE.DEADLINE);
+  if (!m) return null;
+  const q = parseQuickAdd(m[1], { members: [], now: opts.now, me: opts.me });
+  if (!q.matched.includes('date')) return null;
+  if (q.matched.includes('time'))  return null;
+  if (q.title && q.title !== 'Untitled') return null;
+  return { date: q.date, span: m[0] };
+}
+
+/* Unmistakably a chore: an explicit tag, a modal, someone told to do it, or
+   a real deadline. These beat shopping and the edit matcher. */
+function todoStrong(text, opts) {
+  const t = String(text).trim();
+  /* A clock outranks a chore FRAME but not a chore VERB. "I need to leave
+     for the airport Friday 6am" is an appointment however it is phrased;
+     "take out the trash Tuesday at 7" is a chore with a preferred hour. */
+  if (!looksLikeTodo(t)) {
+    const q = parseQuickAdd(t, { members: [], now: opts.now, me: opts.me });
+    if (q.matched.includes('time')) return false;
+  }
+  if (ROUTE_RE.TODO_TAG.test(t))   return true;
+  if (ROUTE_RE.TODO_SELF.test(t))  return true;
+  if (ROUTE_RE.TODO_TELL.test(t))  return true;
+  if (ROUTE_RE.TODO_MODAL.test(t)) return true;
+  if (ROUTE_RE.TODO_HOUSE.test(t)) return true;
+  if (deadlineOf(t, opts)) return true;
+  return false;
+}
+
+/* opts: { members, now, me, senderRole }
+   Returns { title, assignees:[name], due_on, repeat, house, warnings:[] } */
+function parseTodo(input, opts = {}) {
+  let text = String(input || '').trim();
+  const out = { title: '', assignees: [], due_on: null, due_time: null,
+                repeat: null, house: false, warnings: [] };
+
+  const tag = text.match(ROUTE_RE.TODO_TAG);
+  if (tag) text = tag[1].trim();
+
+  /* Pull the deadline out before anything else parses it as an event date. */
+  const dl = deadlineOf(text, opts);
+  if (dl) { out.due_on = dl.date; text = text.replace(dl.span, ' ').trim(); }
+
+  /* Who owes it. The frames are ordered most-specific first. */
+  let body = text;
+  const tell = text.match(ROUTE_RE.TODO_TELL);
+  const self = text.match(ROUTE_RE.TODO_SELF);
+  const hous = text.match(ROUTE_RE.TODO_HOUSE);
+
+  if (self)      { body = self[1]; out.assignees = [opts.me].filter(Boolean); }
+  else if (hous) { body = hous[1]; out.house = true; }
+  else if (tell) { body = tell[2]; out.assignees = whoIn(tell[1], opts.members); }
+  else {
+    const modal = text.match(ROUTE_RE.TODO_MODAL);
+    if (modal) {
+      const before = text.slice(0, text.length - modal[0].length);
+      body = modal[1];
+      out.assignees = whoIn(before, opts.members);
+    } else {
+      /* "Bryce clean room" / "Bryce and Addie clean the garage" — names at
+         the front, verb phrase after. */
+      const lead = leadingNames(text, opts.members);
+      if (lead) { out.assignees = lead.names; body = lead.rest; }
+    }
+  }
+
+  /* A date still in the body ("mow the lawn Saturday") is the due date, and
+     a repeat ("every Tuesday") is the recurrence. Names are NOT re-read
+     here: the frames above already settled who owes it. */
+  const q = parseQuickAdd(body, { members: [], now: opts.now, me: opts.me });
+  if (!out.due_on && q.matched.includes('date')) out.due_on = q.date;
+  /* A chore can have a preferred hour without being an appointment. Keeping
+     it means the nag fires then instead of at the household default. */
+  if (q.matched.includes('time') && q.start) {
+    out.due_time = q.start;
+    /* An hour with no day means today — "finish homework by 8pm" is not a
+       chore floating in the calendar with a time attached to nothing. */
+    if (!out.due_on) out.due_on = q.date;
+  }
+  if (q.repeat) out.repeat = q.repeat;
+
+  out.title = tidyTodoTitle(q.title && q.title !== 'Untitled' ? q.title : body);
+  if (!out.assignees.length && !out.house) out.assignees = [opts.me].filter(Boolean);
+  if (!out.title) out.warnings.push('nothing to do');
+  return out;
+}
+
+/* Names at the front of a sentence, followed by a verb phrase. */
+function leadingNames(text, members) {
+  const roster = (members || []).map(m => typeof m === 'string' ? { name: m, aliases: [] } : m);
+  const found = [];
+  let rest = String(text);
+  for (;;) {
+    let hit = null;
+    for (const mem of roster) {
+      for (const term of [mem.name, ...(mem.aliases || [])]) {
+        if (!term) continue;
+        const re = new RegExp(`^\\s*(?:and\\s+|,\\s*)?${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[\\s,:]*`, 'i');
+        const m = rest.match(re);
+        if (m && (!hit || m[0].length > hit.m[0].length)) hit = { m, name: mem.name };
+      }
+    }
+    if (!hit) break;
+    if (!found.includes(hit.name)) found.push(hit.name);
+    rest = rest.slice(hit.m[0].length);
+  }
+  if (!found.length || !rest.trim()) return null;
+  return { names: found, rest: rest.trim() };
+}
+
+/* Which of the roster appear anywhere in a fragment. */
+function whoIn(fragment, members) {
+  const roster = (members || []).map(m => typeof m === 'string' ? { name: m, aliases: [] } : m);
+  const out = [];
+  for (const mem of roster) {
+    for (const term of [mem.name, ...(mem.aliases || [])]) {
+      if (!term) continue;
+      if (new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(fragment)) {
+        if (!out.includes(mem.name)) out.push(mem.name);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+function tidyTodoTitle(t) {
+  let s = String(t || '').replace(/\s+/g, ' ').trim()
+    .replace(/^(?:please|can you|to)\s+/i, '')
+    /* A dangling deadline preposition: "finish homework by 8pm" has its
+       clock taken as a due time, which leaves the "by" behind. */
+    .replace(/\s+\b(?:by|due|before|no later than)\s*$/i, '')
+    .replace(/[\s,.;:]+$/, '');
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/* Is this text shaped like a chore at all? Used by the weak tail. */
+function looksLikeTodo(text) {
+  return TODO_VERB_RE.test(String(text).trim());
+}
+
 const admin = () => createClient(
   Deno.env.get('SUPABASE_URL')!,
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -1304,7 +1750,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-10b-flavor';
+const BUILD = '2026-09-10h-duetime';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
@@ -1477,7 +1923,13 @@ function confirmText(p: any, date: string, verb = 'Added') {
    event is allowed to exist is not. */
 function nudge(p: any) {
   if (p.needsCast)  return '\n\nWho’s going? Reply: "Addie going, Jess there, me back"';
-  if (p.needsRides) return '\n\nRides? Reply: "Jess there, me back" — or ignore this.';
+  /* Numbered, because most of the time the answer is "nobody needs a lift"
+     and typing a sentence to say nothing is the kind of friction that makes
+     people stop answering. 1 is the common case and comes first. */
+  if (p.needsRides) return '\n\nRides?\n1 = no ride needed\n2 = I drive both ways\n' +
+                           '3 = I take them, someone brings them back\n' +
+                           '4 = someone takes them, I bring them back\n' +
+                           'Or say it: "Jess there, me back"';
   if (p.needsEnd)   return '\n\nHow long does it run? Reply "2 hours" or "til 8pm" — ' +
                            'the pickup alert is measured from the end.';
   return '';
@@ -1526,6 +1978,25 @@ async function advance(db: any, p: any, date: string, members: any[], sender: an
   const ev = await createEvent(db, p, members, sender, tz, date);
   if (!ev) return twiml('Could not save that one. Try again?');
   await remember(db, sender, ev.id, date, 'create');
+
+  /* If we are asking about rides, leave a numbered question open so a bare
+     "1" means something. This is safe precisely because an unmatched reply
+     drops the question and routes normally — the event is already saved, so
+     ignoring the whole thing costs nothing. */
+  if (p.needsRides) {
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'rides',
+      payload: { eventId: ev.id, date },
+      options: [
+        { keys: ['1','none','no','no ride','nobody'], value: 'none' },
+        { keys: ['2','both','both ways'],             value: 'both' },
+        { keys: ['3','there'],                        value: 'there' },
+        { keys: ['4','back'],                         value: 'back' },
+      ],
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+  }
+
   return twiml(confirmText(p, date) + nudge(p) +
                (p.warnings.length ? `\n\n(${p.warnings[0]})` : ''));
 }
@@ -1683,6 +2154,131 @@ function findStore(stores: any[], text: string) {
   for (const { store, text: term } of storeTerms(stores)) if (norm(term) === t) return store;
   return storeIn(stores, text);
 }
+
+/* ===========================================================================
+ * TODOS
+ *
+ * The third thing a text can be. An event has a clock; shopping has a store;
+ * a todo has neither — just somebody who owes it and, sometimes, a day it is
+ * wanted by. Order is whatever that person dragged it into, because a list
+ * that silently re-sorts itself is not a list anyone trusts.
+ * ========================================================================= */
+
+async function showTodos(db: any, who: any) {
+  const { data: rows } = await db.rpc('member_todos', { p_member: who.id });
+  if (!rows?.length) return twiml(`${who.name} has nothing on the list.`);
+
+  const line = (t: any) => {
+    const bits = [];
+    if (t.overdue_days > 0) bits.push(`${t.overdue_days}d late`);
+    else if (t.due_on)      bits.push(prettyShort(t.due_on));
+    if (t.shared)           bits.push('shared');
+    return `• ${t.title}${bits.length ? `  (${bits.join(', ')})` : ''}`;
+  };
+
+  return twiml(`${who.name}'s list:\n` + rows.map(line).join('\n') +
+               `\n\nReply "did <thing>" when one is done.`);
+}
+
+async function addTodo(db: any, body: string, sender: any, members: any[], tz: string, now: Date) {
+  const roster = members.map((m: any) => ({ name: m.name, aliases: m.aliases ?? [] }));
+  const p = parseTodo(body, { members: roster, now, me: sender.name });
+
+  if (!p.title) return twiml('What needs doing?');
+
+  /* Only adults hand out work. A kid naming someone else is not ambiguous,
+     it is policy — so file it on their own list and say so plainly. A
+     pending question for a nine-year-old is worse than a sentence. */
+  const isAdult = ['owner','adult'].includes(sender.role);
+  let assignedElsewhere = false;
+  let assignees = p.assignees;
+  if (!isAdult && (p.house || assignees.some((n: string) => n !== sender.name))) {
+    assignees = [sender.name];
+    assignedElsewhere = true;
+  }
+
+  const idOf = (n: string) => (members.find((m: any) =>
+    m.name.toLowerCase() === String(n).toLowerCase()) || {}).id || null;
+
+  /* One row per owner, sharing a batch. Two people responsible for different
+     portions is two things, each with its own checkbox and its own nag. */
+  const batch = crypto.randomUUID();
+  const targets = (p.house && isAdult) ? [null] : assignees.map(idOf).filter(Boolean);
+  if (!targets.length) targets.push(sender.id);
+
+  const rows = targets.map((mid: any) => ({
+    household_id: HOUSEHOLD, title: p.title, assignee_id: mid,
+    assigned_by: sender.id, batch_id: batch, due_on: p.due_on, due_time: p.due_time,
+    repeat_freq: p.repeat?.freq ?? null,
+    repeat_interval: p.repeat?.interval ?? 1,
+    repeat_days: p.repeat?.days ?? [],
+    repeat_until: p.repeat?.until ?? null,
+    source: 'sms', created_by: sender.id
+  }));
+
+  const { data: made, error } = await db.from('todos').insert(rows).select('id');
+  if (error) return twiml(`Could not save that: ${error.message}`);
+
+  if (made?.length) {
+    await db.from('sms_last_action').upsert({
+      member_id: sender.id, household_id: HOUSEHOLD,
+      todo_id: made[0].id, event_id: null, action: 'create'
+    }, { onConflict: 'member_id' });
+  }
+
+  const whoLabel = (p.house && isAdult) ? 'the house'
+                 : assignees.length ? assignees.join(' and ') : sender.name;
+  const when = p.due_on ? ` · by ${prettyShort(p.due_on)}` : '';
+  /* describe() renders the repeat phrase and is already inlined here;
+     describeRepeat lives in recur.js, which is not. allDay:true because
+     a todo has no clock and describe() would try to format one. */
+  const rep  = p.repeat
+    ? ` · ${describe({ repeat: p.repeat, date: p.due_on, allDay: true }).repeat}` : '';
+
+  return twiml(`On ${whoLabel === sender.name ? 'your' : whoLabel + "'s"} list: ` +
+               `${p.title}${when}${rep}` +
+               (assignedElsewhere
+                 ? `\n\nAdded to your list — only a parent can give someone else a to-do.`
+                 : ''));
+}
+
+async function finishTodo(db: any, needle: string, sender: any) {
+  const { data: rows } = await db.rpc('member_todos', { p_member: sender.id });
+  if (!rows?.length) return twiml('Nothing open on your list.');
+
+  const scored = rows.map((t: any) => ({ t, s: scoreTitle(needle, t.title) }))
+                     .filter((x: any) => x.s >= 0.5)
+                     .sort((a: any, b: any) => b.s - a.s);
+
+  if (!scored.length) return twiml(`Nothing open called "${needle}".`);
+
+  /* A clear winner is taken and echoed — completion is one tap to undo and
+     the echo makes a wrong pick obvious. A tie is asked about, because
+     guessing between two real chores just moves the problem. */
+  if (scored.length > 1 && scored[1].s === scored[0].s) {
+    const opts = scored.slice(0, 4).map((x: any, i: number) =>
+      ({ keys: [String(i + 1)], value: x.t.id }));
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'pick_todo',
+      payload: {}, options: opts,
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    return twiml('Which one?\n' +
+      scored.slice(0, 4).map((x: any, i: number) => `${i + 1} = ${x.t.title}`).join('\n'));
+  }
+
+  const hit = scored[0].t;
+  await db.from('todos').update({
+    completed_at: new Date().toISOString(), completed_by: sender.id
+  }).eq('id', hit.id);
+  await db.from('reminders').delete().eq('todo_id', hit.id).is('sent_at', null);
+
+  return twiml(`Done: ${hit.title}`);
+}
+
+const prettyShort = (d: string) =>
+  new Date(d + 'T12:00:00Z').toLocaleDateString('en-US',
+    { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
 
 async function showShopping(db: any, store: any = null) {
   const { stores } = await shopContext(db);
@@ -1916,9 +2512,35 @@ Deno.serve(async (req) => {
         return await advance(db, pl.parsed, hit.value, members ?? [], sender, tz);
       }
 
+      if (pend.kind === 'rides') {
+        const evId = (pend.payload as any).eventId;
+        if (hit.value === 'none') {
+          /* Nobody needs a lift. Recording that is the point — it stops the
+             question coming back, and an event with a cast and no driver is
+             a real answer, not a gap. */
+          return twiml('Got it — no ride needed.');
+        }
+        const role = hit.value === 'both' ? 'driving'
+                   : hit.value === 'there' ? 'dropoff' : 'pickup';
+        /* The unique key is (event, member, ROLE) — the same person can be
+           both going and driving — so an upsert has to name all three or it
+           writes a duplicate. */
+        await db.from('event_people').upsert({
+          household_id: HOUSEHOLD, event_id: evId, member_id: sender.id, role
+        }, { onConflict: 'event_id,member_id,role' });
+        /* resync_reminders() is a TRIGGER function, not callable. Touching
+           the event fires it, which is what recomputes the lead. */
+        await db.from('events').update({ updated_at: new Date().toISOString() }).eq('id', evId);
+        const said = hit.value === 'both' ? 'you drive both ways'
+                   : hit.value === 'there' ? 'you take them'
+                   : 'you bring them back';
+        return twiml(`Got it — ${said}.`);
+      }
+
       if (pend.kind === 'route_intent') {
         if (hit.value === 'cancel') return twiml('Dropped it.');
         if (hit.value === 'shop')   return await addShopping(db, pl.body, sender);
+        if (hit.value === 'todo')   return await addTodo(db, pl.body, sender, members ?? [], tz, nowInTz(tz));
         const rp = parseQuickAdd(pl.body, {
           members: (members ?? []).map((m: any) => ({ name: m.name, aliases: m.aliases ?? [] })),
           defaultLead: sender.default_lead_minutes ?? 30, now: nowInTz(tz), me: sender.name });
@@ -1991,40 +2613,44 @@ Deno.serve(async (req) => {
      dropped, and "mom is driving" is how this actually gets texted. */
   const names = (members ?? []).map((m: any) => ({ name: m.name, aliases: m.aliases ?? [] }));
 
-  // ---- the list itself ----------------------------------------------------
-  if (LIST_CMD.test(body)) return await showShopping(db);
+  /* ---- WHAT KIND OF MESSAGE IS THIS? ------------------------------------
+     routeIntent lives in parse.js and is the single source of routing order.
+     route.test.mjs used to re-implement this chain by hand and claim in a
+     comment that it "mirrors the handler" — it did not, because the real
+     chain runs corrections and edits between the scoped list and the
+     shopping intents and the copy had neither. A test that reimplements the
+     thing it tests agrees with itself forever.
 
-  if (TRIP_DONE.test(body)) {
-    const { stores } = await shopContext(db);
-    return await clearList(db, storeIn(stores, body), true);
+     The decidable branches are answered here. Corrections and edits come
+     back as 'stateful' and keep their own matchers below, because "no, make
+     it 4" means nothing without knowing what just happened. */
+  const now = nowInTz(tz);
+  const routeCtx = { stores: (await shopContext(db)).stores,
+                     members: names, now, me: sender.name };
+  const routed = routeIntent(body, routeCtx);
+
+  if (routed.intent === 'show' && !routed.store) return await showShopping(db);
+  if (routed.intent === 'trip_done') return await clearList(db, routed.store, true);
+  if (routed.intent === 'clear')     return await clearList(db, routed.store, false);
+
+  if (routed.intent === 'show' && routed.store) return await showShopping(db, routed.store);
+
+  /* ---- TODOS -------------------------------------------------------------
+     Some things just need doing. No time, no calendar entry — a list, per
+     person, in the order they want to see it. */
+  if (routed.intent === 'todo_show') {
+    const who = (members ?? []).find((m: any) =>
+      m.name.toLowerCase() === String(routed.who || '').toLowerCase()) || sender;
+    return await showTodos(db, who);
   }
 
-  /* Bulk clear. Checked BEFORE the scoped view, or "remove HEB list" reads as
-     a request to SHOW the HEB list — the words are nearly identical and the
-     outcomes are opposite. */
-  {
-    const cv = body.match(CLEAR_VERB);
-    if (cv) {
-      const { stores } = await shopContext(db);
-      const st = storeIn(stores, cv[1] || '');
-      let rest = (cv[1] || '');
-      if (st) rest = stripStore(st, rest);
-      rest = rest.replace(BULK_FILLER, ' ').replace(/[^a-z0-9 ]/gi, ' ').trim();
-      // Nothing left but a store and filler -> they named no item, so it is
-      // the whole list they mean. Anything left is an item; fall through.
-      if (!rest) return await clearList(db, st, false);
-    }
+  if (routed.intent === 'todo') {
+    return await addTodo(db, body, sender, members ?? [], tz, now);
   }
 
-  {
-    const ls = body.match(LIST_SCOPED);
-    if (ls) {
-      const { stores } = await shopContext(db);
-      const st = findStore(stores, ls[1]);
-      if (st) return await showShopping(db, st);
-    }
+  if (routed.intent === 'todo_done') {
+    return await finishTodo(db, routed.text, sender);
   }
-  const now   = nowInTz(tz);
 
   /* ---- a correction to whatever just happened? ---------------------------
      This runs before the edit matcher on purpose. "no, make it 4" names no
@@ -2209,7 +2835,13 @@ Deno.serve(async (req) => {
 
   // ---- an edit? -----------------------------------------------------------
   const em = body.match(EDIT_RE);
-  if (em && /\b(mov|chang|reschedul|shift|push|now)\b/i.test(body)) {
+  /* The stems used to carry a trailing \b — /\b(mov|chang|...)\b/ — which
+     cannot match "moved", "move", "change" or "reschedule" at all, because
+     a word character follows the stem. Only push, shift and now ever got
+     through, so editing an event by text has been mostly dead since it
+     shipped. The gate itself is right and must stay: behind it is a fuzzy
+     title match at 0.5 that rewrites an event's date. */
+  if (em && ROUTE_RE.EDIT_VERB.test(body)) {
     const needle = em[1].trim();
     const when   = em[2].trim();
     const w = parseQuickAdd(when, { members: names, now, defaultLead: null, me: sender.name });
@@ -2286,17 +2918,22 @@ Deno.serve(async (req) => {
     if (parseShopping(body, { stores }).store) return await addShopping(db, body, sender);
   }
 
-  if (!hasWhen && !p.people.length) {
+  if (!hasWhen) {
+    /* Three kinds of thing now, not two. This question offered only calendar
+       and shopping, which meant anything that was really a chore had nowhere
+       to go — the commonest case in a house, and the one with no clock. */
     const ask = p.title || body;
     await db.from('sms_pending').upsert({
       household_id: HOUSEHOLD, member_id: sender.id, kind: 'route_intent',
       payload: { body },
-      options: [ { keys: ['1','event','calendar'],       value: 'event' },
-                 { keys: ['2','shopping','list','shop'], value: 'shop'  },
-                 { keys: ['cancel','stop','no'],         value: 'cancel' } ],
+      options: [ { keys: ['1','event','calendar'],        value: 'event' },
+                 { keys: ['2','shopping','list','shop'],  value: 'shop'  },
+                 { keys: ['3','todo','to-do','task','chore'], value: 'todo' },
+                 { keys: ['cancel','stop','no'],          value: 'cancel' } ],
       expires_at: new Date(Date.now() + 15 * 60_000).toISOString()
     }, { onConflict: 'member_id' });
-    return twiml(`"${ask}" — which did you mean?\n1 = calendar event\n2 = shopping list`);
+    return twiml(`"${ask}" — which did you mean?\n1 = calendar event\n` +
+                 `2 = shopping list\n3 = to-do (no time needed)`);
   }
 
   // Naming today's own weekday is ambiguous. Ask rather than guess.

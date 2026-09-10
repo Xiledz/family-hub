@@ -3,7 +3,7 @@
  * No build step. Native ES modules, loaded straight from GitHub Pages.
  * ==========================================================================*/
 import { CONFIG, isDemo } from './config.js';
-import { parseQuickAdd, describe, parseShopping } from './parse.js';
+import { parseQuickAdd, describe, parseShopping, parseTodo } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
 
 const $  = s => document.querySelector(s);
@@ -425,6 +425,7 @@ function render(){
   $('#hello-sub').textContent = now.toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
 
   if (state.module === 'shopping') { $('#viewbar').classList.add('hide'); return renderShopping(); }
+  if (state.module === 'todos')    { $('#viewbar').classList.add('hide'); return renderTodos(); }
   if (state.module !== 'calendar') { $('#viewbar').classList.add('hide'); return renderPlaceholder(); }
 
   $('#viewbar').classList.remove('hide');
@@ -459,11 +460,14 @@ function render(){
         <div class="tdate">${now.toLocaleDateString('en-US',{weekday:'long'})}</div>
         <h2 class="tbig">${now.toLocaleDateString('en-US',{month:'short', day:'numeric'})}</h2>
         ${todays.length ? todays.map(e => `
-          <button class="trow" data-ev="${e.id}" style="--c:${colorOf(e.member_id)}">
-            <span class="ttime">${timeOf(e)}</span>
-            <span class="body"><span class="ttitle">${esc(e.title)}</span><span class="twho">${esc(whoOf(e))}</span></span>
-            ${e.lead_minutes != null ? `<span class="bell" title="Reminder ${leadLabel(e.lead_minutes)} before">&#9201;</span>` : ''}
-          </button>`).join('')
+          <div class="trow${EV.isDone(e) ? ' evdone' : ''}" style="--c:${colorOf(e.member_id)}">
+            <button class="tick" data-evtick="${e.id}" aria-label="Done">${EV.isDone(e) ? '✓' : ''}</button>
+            <button class="trowbody" data-ev="${e.id}">
+              <span class="ttime">${timeOf(e)}</span>
+              <span class="body"><span class="ttitle">${esc(e.title)}</span><span class="twho">${esc(whoOf(e))}</span></span>
+              ${e.lead_minutes != null ? `<span class="bell" title="Reminder ${leadLabel(e.lead_minutes)} before">&#9201;</span>` : ''}
+            </button>
+          </div>`).join('')
         : `<div class="empty">Nothing on the calendar today.</div>`}
       </section>
 
@@ -508,6 +512,7 @@ function render(){
     </div>`;
 
   $$('[data-ev]').forEach(b => b.onclick = () => openSheet(state.events.find(e => e.id === b.dataset.ev)));
+  $$('[data-evtick]').forEach(b => b.onclick = e => { e.stopPropagation(); EV.toggle(b.dataset.evtick); });
   $$('[data-day]').forEach(b => b.onclick = () => openSheet(null, b.dataset.day));
 }
 
@@ -807,6 +812,360 @@ function renderShopping(){
   };
 }
 
+
+/* ==========================================================================
+ * TO-DO
+ *
+ * The third kind of thing. An event has a clock; a shopping item has a
+ * store; a to-do has neither — just somebody who owes it and, sometimes, a
+ * day it is wanted by. Most of what a household owes has no time at all:
+ * the fence, the filter, the thank-you note. Those are not events and
+ * pretending they are is how a calendar fills up with things that never
+ * happen at the hour they claim.
+ *
+ * Order is the priority. Erich chose drag-to-reorder over high/medium/low,
+ * and he was right: a priority field is one nobody fills in, and once half
+ * the list is unset the sort stops meaning anything. Position is a number
+ * the hand sets. Due dates are badges, never sort keys — a list that
+ * silently re-sorts itself is not a list anyone trusts.
+ *
+ * Everyone's is their own. The person chips switch whose list you are
+ * looking at; "House" is the shared one, which shows up on everybody's.
+ * ======================================================================== */
+
+/* ==========================================================================
+ * CHECKING AN EVENT OFF
+ *
+ * A one-off thing that has happened should not sit on the calendar looking
+ * exactly like one that has not. That is the difference between a calendar
+ * you trust and one you scroll past.
+ *
+ * A single event carries done_at. An OCCURRENCE of a recurring event cannot —
+ * ticking this Tuesday's practice must not mark every Tuesday — so that
+ * writes an event_exceptions row for the one date, which is the same
+ * mechanism a skipped or moved occurrence already uses.
+ * ======================================================================== */
+const EV = {
+  /* The date being ticked is the occurrence on screen, not "today" — you can
+     be looking at next Tuesday. */
+  dateOf(e){ return e.occurrence_date || e.event_date || ymd(new Date()); },
+
+  isDone(e){
+    if (e.repeat_freq) {
+      const d = EV.dateOf(e);
+      return (state.evDone || []).some(x => x.event_id === e.id && x.occurrence_date === d);
+    }
+    return !!e.done_at;
+  },
+
+  async loadDone(){
+    if (state.demo) { state.evDone = []; return; }
+    const { data } = await state.db.from('event_done')
+      .select('event_id, occurrence_date').eq('household_id', CONFIG.HOUSEHOLD_ID);
+    state.evDone = data || [];
+  },
+
+  async toggle(id){
+    const e = state.events.find(x => x.id === id); if (!e) return;
+    const done = !EV.isDone(e);
+
+    if (e.repeat_freq) {
+      const d = EV.dateOf(e);
+      if (done) {
+        await state.db.from('event_done').upsert({
+          household_id: CONFIG.HOUSEHOLD_ID, event_id: id, occurrence_date: d,
+          done_by: state.me?.id || null
+        }, { onConflict: 'event_id,occurrence_date' });
+        state.evDone = [...(state.evDone||[]), { event_id: id, occurrence_date: d }];
+      } else {
+        await state.db.from('event_done').delete()
+          .eq('event_id', id).eq('occurrence_date', d);
+        state.evDone = (state.evDone||[]).filter(x =>
+          !(x.event_id === id && x.occurrence_date === d));
+      }
+      render(); return;
+    }
+
+    e.done_at = done ? new Date().toISOString() : null;      // optimistic
+    render();
+    await state.db.from('events').update({
+      done_at: e.done_at, done_by: done ? (state.me?.id || null) : null
+    }).eq('id', id);
+  }
+};
+
+const TODO = {
+  async load(){
+    if (state.demo) { state.todos = state.todos || []; return; }
+    const { data, error } = await state.db.from('todos')
+      .select('*')
+      .eq('household_id', CONFIG.HOUSEHOLD_ID)
+      .is('deleted_at', null).is('cleared_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true });
+    if (error) { console.warn('todos load failed', error); return; }
+    state.todos = data || [];
+  },
+
+  /* New things go to the TOP. A default of 0 would drop them into the
+     middle of a ranked list, which is the one place nobody looks. */
+  topOf(assigneeId){
+    const mine = (state.todos || []).filter(t =>
+      !t.completed_at && (t.assignee_id ?? null) === (assigneeId ?? null));
+    return mine.length ? Math.min(...mine.map(t => t.sort_order)) - 1000 : 0;
+  },
+
+  async add(text){
+    const who = state.todoWho === 'house' ? null : (state.todoWho || state.me?.id || null);
+    const p = parseTodo(text, {
+      members: state.members.map(m => ({ name: m.name, aliases: m.aliases || [] })),
+      now: new Date(), me: state.me?.name
+    });
+    if (!p.title) { toast('What needs doing?'); return; }
+
+    const idOf = n => (state.members.find(m =>
+      m.name.toLowerCase() === String(n).toLowerCase()) || {}).id || null;
+
+    /* Named people win over the chip you happen to be looking at: typing
+       "Bryce clean room" while on your own list means Bryce. */
+    let targets = p.house ? [null]
+                : p.assignees.length ? p.assignees.map(idOf).filter(Boolean)
+                : [who];
+    if (!targets.length) targets = [who];
+
+    const batch = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+    const rows = targets.map(mid => ({
+      household_id: CONFIG.HOUSEHOLD_ID, title: p.title,
+      assignee_id: mid, assigned_by: state.me?.id || null, batch_id: batch,
+      sort_order: TODO.topOf(mid), due_on: p.due_on, due_time: p.due_time,
+      repeat_freq: p.repeat?.freq ?? null,
+      repeat_interval: p.repeat?.interval ?? 1,
+      repeat_days: p.repeat?.days ?? [],
+      repeat_until: p.repeat?.until ?? null,
+      source: 'web', created_by: state.me?.id || null
+    }));
+
+    const { error } = await state.db.from('todos').insert(rows);
+    if (error) { console.error(error); toast('Could not save'); return; }
+    await TODO.load(); render();
+  },
+
+  async toggle(id){
+    const t = (state.todos || []).find(x => x.id === id); if (!t) return;
+    const done = !t.completed_at;
+    t.completed_at = done ? new Date().toISOString() : null;   // optimistic
+    render();
+    await state.db.from('todos').update({
+      completed_at: t.completed_at,
+      completed_by: done ? (state.me?.id || null) : null
+    }).eq('id', id);
+    /* A repeating todo spawns its successor in a trigger, so the list has to
+       come back from the server to see it. */
+    await TODO.load(); render();
+  },
+
+  /* Hard delete, matching shopping: a to-do removed is a mistake, not a
+     completion. "Clear done" is the recoverable one. */
+  async remove(id){
+    state.todos = (state.todos || []).filter(t => t.id !== id); render();
+    await state.db.from('todos').delete().eq('id', id);
+  },
+
+  async clearDone(){
+    const ids = (state.todos || []).filter(t => t.completed_at).map(t => t.id);
+    if (!ids.length) return;
+    await state.db.from('todos')
+      .update({ cleared_at: new Date().toISOString() }).in('id', ids);
+    await TODO.load(); render();
+  },
+
+  /* Drop `id` immediately before `beforeId` (or at the end when null).
+     Sparse doubles mean one write per drag instead of renumbering the list;
+     when two neighbours get too close to split, renumber that person's rows
+     in thousands and carry on. */
+  async move(id, beforeId){
+    const list = TODO.visible().filter(t => !t.completed_at);
+    const moving = list.find(t => t.id === id); if (!moving) return;
+    const rest = list.filter(t => t.id !== id);
+    const at = beforeId ? rest.findIndex(t => t.id === beforeId) : rest.length;
+    const prev = at > 0 ? rest[at - 1].sort_order : null;
+    const next = at < rest.length ? rest[at].sort_order : null;
+
+    let pos;
+    if (prev === null && next === null) pos = 0;
+    else if (prev === null) pos = next - 1000;
+    else if (next === null) pos = prev + 1000;
+    else pos = (prev + next) / 2;
+
+    if (prev !== null && next !== null && Math.abs(next - prev) < 1e-6) {
+      const renum = rest.slice(); renum.splice(at, 0, moving);
+      for (let i = 0; i < renum.length; i++) {
+        renum[i].sort_order = i * 1000;
+        await state.db.from('todos').update({ sort_order: i * 1000 }).eq('id', renum[i].id);
+      }
+      await TODO.load(); render(); return;
+    }
+
+    moving.sort_order = pos; render();                        // optimistic
+    await state.db.from('todos').update({ sort_order: pos }).eq('id', id);
+    await TODO.load(); render();
+  },
+
+  /* Whose list is on screen: their own rows plus anything shared. */
+  visible(){
+    const who = state.todoWho ?? state.me?.id ?? null;
+    return (state.todos || []).filter(t =>
+      who === 'house' ? t.assignee_id === null
+                      : (t.assignee_id === who || t.assignee_id === null));
+  }
+};
+
+function renderTodos(){
+  if (state.todoWho === undefined) state.todoWho = state.me?.id ?? null;
+  $('#qa').classList.add('hide');
+
+  const rows  = TODO.visible();
+  const open  = rows.filter(t => !t.completed_at)
+                    .sort((a,b) => a.sort_order - b.sort_order);
+  const done  = rows.filter(t =>  t.completed_at);
+  const today = ymd(new Date());
+
+  const chips = [
+    ...state.members.map(m => ({ id: m.id, name: m.name, color: m.color })),
+    { id: 'house', name: 'House', color: '#6b7280' }
+  ].map(c => `<button class="pchip${state.todoWho === c.id ? ' on' : ''}" data-who="${c.id}"
+      style="--c:${c.color || '#888'}">${esc(c.name)}</button>`).join('');
+
+  const hhmm = t => {
+    if (!t.due_time) return '';
+    const [h, mi] = String(t.due_time).split(':').map(Number);
+    const ap = h < 12 ? 'am' : 'pm';
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    return ` ${h12}${mi ? ':' + String(mi).padStart(2,'0') : ''}${ap}`;
+  };
+
+  const badge = t => {
+    if (!t.due_on) return '';
+    if (t.due_on <  today) {
+      const d = Math.round((new Date(today) - new Date(t.due_on)) / 86400000);
+      return `<span class="tbadge late">${d}d late${hhmm(t)}</span>`;
+    }
+    if (t.due_on === today) return `<span class="tbadge today">Today${hhmm(t)}</span>`;
+    return `<span class="tbadge">${new Date(t.due_on + 'T12:00:00Z')
+      .toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})}${hhmm(t)}</span>`;
+  };
+
+  const item = t => `
+    <li class="todo${t.completed_at ? ' done' : ''}" data-id="${t.id}">
+      <span class="grip" data-grip aria-hidden="true">⋮⋮</span>
+      <button class="tick" data-tick="${t.id}" aria-label="Done">${t.completed_at ? '✓' : ''}</button>
+      <span class="tt">${esc(t.title)}${t.assignee_id === null
+        ? ' <span class="tbadge shared">Shared</span>' : ''}${badge(t)}
+        ${t.repeat_freq ? '<span class="tbadge rep">repeats</span>' : ''}</span>
+      <button class="tx" data-del="${t.id}" aria-label="Remove">×</button>
+    </li>`;
+
+  $('#bento').innerHTML = `
+    <div class="col">
+      <section class="card">
+        <div class="pchips">${chips}</div>
+        <form id="tadd" class="tadd">
+          <input id="tin" placeholder="Something that needs doing…" autocomplete="off">
+          <button>Add</button>
+        </form>
+        ${open.length
+          ? `<ul class="todos" id="tlist">${open.map(item).join('')}</ul>
+             <p class="hint">Hold the ⋮⋮ handle to drag. Order is the priority.</p>`
+          : `<p class="hint" style="padding:18px 2px">Nothing on this list.</p>`}
+        ${done.length
+          ? `<div class="tdone"><b>Done</b>
+               <button class="link" id="tclear">Clear done</button></div>
+             <ul class="todos">${done.map(item).join('')}</ul>` : ''}
+      </section>
+    </div>`;
+
+  $$('[data-who]').forEach(b => b.onclick = () => {
+    state.todoWho = b.dataset.who === 'house' ? 'house' : b.dataset.who;
+    render();
+  });
+  $('#tadd').onsubmit = e => {
+    e.preventDefault();
+    const v = $('#tin').value.trim(); if (!v) return;
+    $('#tin').value = ''; TODO.add(v);
+  };
+  $$('[data-tick]').forEach(b => b.onclick = () => TODO.toggle(b.dataset.tick));
+  $$('[data-del]').forEach(b => b.onclick = () => TODO.remove(b.dataset.del));
+  if ($('#tclear')) $('#tclear').onclick = () => TODO.clearDone();
+  if ($('#tlist')) bindDrag($('#tlist'));
+}
+
+/* Drag, on a phone.
+ *
+ * HTML5 drag-and-drop does not work by touch on iOS in any way worth
+ * shipping — it fights text selection and gives no control over the ghost.
+ * Pointer Events do, and the same code serves a mouse on the desktop.
+ *
+ * The handle is the only draggable part (`touch-action:none` on the grip,
+ * `pan-y` on the row) so the list still scrolls normally under a thumb. A
+ * 250ms hold starts the drag, which is what stops an ordinary tap-scroll
+ * from picking a row up by accident. */
+function bindDrag(list){
+  let timer = null, drag = null;
+
+  const rowsNow = () => [...list.querySelectorAll('.todo')];
+
+  const start = (row, ev) => {
+    const rect = row.getBoundingClientRect();
+    const ghost = row.cloneNode(true);
+    ghost.className = 'todo ghost';
+    Object.assign(ghost.style, {
+      position:'fixed', left:rect.left+'px', top:rect.top+'px',
+      width:rect.width+'px', pointerEvents:'none', zIndex:'999'
+    });
+    document.body.appendChild(ghost);
+    row.classList.add('lifted');
+    drag = { row, ghost, dy: ev.clientY - rect.top, id: row.dataset.id };
+    if (navigator.vibrate) navigator.vibrate(8);
+  };
+
+  const move = ev => {
+    if (!drag) return;
+    ev.preventDefault();
+    drag.ghost.style.top = (ev.clientY - drag.dy) + 'px';
+    /* Insert before the first row whose midpoint is below the pointer. */
+    const others = rowsNow().filter(r => r !== drag.row);
+    let before = null;
+    for (const r of others) {
+      const b = r.getBoundingClientRect();
+      if (ev.clientY < b.top + b.height / 2) { before = r; break; }
+    }
+    if (before) list.insertBefore(drag.row, before);
+    else list.appendChild(drag.row);
+  };
+
+  const end = async () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!drag) return;
+    const d = drag; drag = null;
+    d.ghost.remove(); d.row.classList.remove('lifted');
+    const after = [...list.querySelectorAll('.todo')].map(r => r.dataset.id);
+    const at = after.indexOf(d.id);
+    await TODO.move(d.id, at + 1 < after.length ? after[at + 1] : null);
+  };
+
+  list.querySelectorAll('[data-grip]').forEach(g => {
+    g.addEventListener('contextmenu', e => e.preventDefault());
+    g.addEventListener('pointerdown', ev => {
+      const row = ev.target.closest('.todo');
+      ev.target.setPointerCapture?.(ev.pointerId);
+      timer = setTimeout(() => start(row, ev), 250);
+    });
+    g.addEventListener('pointermove', move);
+    g.addEventListener('pointerup', end);
+    g.addEventListener('pointercancel', end);
+  });
+}
+
 function renderPlaceholder(){
   const copy = {
     shopping:['Shopping list','A shared, checkable list. Add by typing or by texting the family number. Auto-generated from the week\'s meal plan once Meals is built.'],
@@ -844,6 +1203,8 @@ $$('#viewbar button').forEach(b => b.onclick = () => {
 $$('#tabbar button').forEach(b => b.onclick = async () => {
   state.module = b.dataset.mod;
   if (state.module === 'shopping') await SHOP.load();
+  if (state.module === 'todos')    await TODO.load();
+  if (state.module === 'calendar') await EV.loadDone();
   $$('#tabbar button').forEach(x => x.setAttribute('aria-current', String(x === b)));
   render();
 });
@@ -1356,6 +1717,9 @@ document.addEventListener('visibilitychange', () => {
   // The list changes under you while someone else shops. Re-read on return.
   if (document.visibilityState === 'visible' && state.module === 'shopping' && !state.demo) {
     SHOP.load().then(render);
+  }
+  if (document.visibilityState === 'visible' && state.module === 'todos' && !state.demo) {
+    TODO.load().then(render);
   }
   if (!document.hidden) checkRollover();
 });
