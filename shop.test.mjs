@@ -178,7 +178,7 @@ eq('a real item is left alone',   repairName('banana'), null);
 eq('milk is left alone',          repairName('milk'), null);
 eq('unknown stays unknown',       repairName('flux'), null);
 
-eq('a repair reaches the item',   names('buy harbough gummies')[0], 'haribo');
+eq('a repair reaches the item',   names('buy harbough gummies')[0], 'haribo gummies');
 eq('...and says what it heard',   P('buy harbough gummies').items[0].heardAs, 'harbough');
 /* Two mis-heard brands used to merge into one row reading "tide charmin",
    because the repair ran after the split instead of before it. */
@@ -200,8 +200,8 @@ eq('pick up is not two items',        names('pick up bananas'), ['bananas']);
 eq('the full run-on',
    withStore('milk eggs 2 pounds of ground beef ground beef list kroger diapers ' +
              'by harbo gummies add bike'),
-   ['-:milk','-:eggs','-:ground beef','Kroger:diapers','Kroger:haribo',
-    'Kroger:gummies','Kroger:bike']);
+   ['-:milk','-:eggs','-:ground beef','Kroger:diapers','Kroger:haribo gummies',
+    'Kroger:bike']);
 
 /* --- said twice is still one thing ---------------------------------------
    "ground beef ... 2 pounds ground beef" means two pounds, not two rows. The
@@ -215,6 +215,88 @@ eq('same item at two stores is two rows',
    and "milk" would otherwise become two catalog rows that never learn from
    each other. */
 eq('names are lower case', names('Milk, Eggs, Ground Beef'), ['milk','eggs','ground beef']);
+
+/* --- a brand is an adjective ----------------------------------------------
+   "Nutella sticks" is one thing to buy. Splitting on the longest known word
+   alone got this backwards and produced a brand with no product and a product
+   with no meaning — "nutella" and "sticks", neither findable in a store.
+   A brand introduces an item; it does not end one. */
+eq('nutella sticks',   names('nutella sticks'),      ['nutella sticks']);
+eq('tide pods',        names('tide pods'),           ['tide pods']);
+eq('dove soap',        names('dove soap'),           ['dove soap']);
+eq('haribo gummies',   names('haribo gummies'),      ['haribo gummies']);
+eq('multi-word brand', names('blue bell vanilla'),   ['blue bell vanilla']);
+
+/* But a brand does not swallow the whole list. Another brand, a quantity, a
+   filler word or a core grocery all start a new item. */
+eq('brand then brand',   names('tide charmin'),               ['tide','charmin']);
+eq('brand then core',    names('doritos milk eggs'),          ['doritos','milk','eggs']);
+eq('and still separates',names('nutella sticks and milk'),    ['nutella sticks','milk']);
+eq('a quantity restarts',names('2 lbs ground beef doritos'),  ['ground beef','doritos']);
+eq('brand then produce', names('cheerios bananas'),           ['cheerios','bananas']);
+
+/* Quotes are the escape hatch for anything the lexicon has never heard of. */
+eq('quotes force one item',
+   names('buy "kodiak power cakes" and milk'), ['kodiak power cakes','milk']);
+
+/* --- and the correction has to STICK --------------------------------------
+   looksMerged guards the catalog against learning its own mistakes, but it
+   was rejecting "haribo gummies" too — so correcting that once never stuck,
+   because the catalog refused to learn the very thing the fix was for. A
+   phrase opening with a brand is a product name, not an accident. */
+eq('brand-led phrases are learnable', looksMerged('haribo gummies'), false);
+eq('...and nutella sticks',           looksMerged('nutella sticks'), false);
+eq('...and blue bell vanilla',        looksMerged('blue bell vanilla'), false);
+eq('a real accident still is',        looksMerged('milk eggs'), true);
+
+eq('a learned phrase wins next time',
+   parseShopping('kodiak power cakes and milk',
+     { catalog: [{ name: 'kodiak power cakes', category: 'breakfast' }] })
+     .items.map(i => i.name), ['kodiak power cakes','milk']);
+
+/* --- brand + flavour + item -----------------------------------------------
+   A brand is an adjective: it introduces an item, it never ends one. What
+   follows may be a flavour, a variety, a size descriptor, or several of
+   them, before the noun finally arrives. "Blue Bell homemade vanilla ice
+   cream" is five words past the brand, so a three-word tail chopped it and
+   left an orphan "cream" behind. */
+eq('brand flavour item',
+   names('haribo gold bears gummy candy'), ['haribo gold bears gummy candy']);
+eq('five past the brand',
+   names('blue bell homemade vanilla ice cream'), ['blue bell homemade vanilla ice cream']);
+eq('two-word flavour',
+   names('chobani strawberry banana greek yogurt'), ['chobani strawberry banana greek yogurt']);
+eq('variety then noun',
+   names('campbells chicken noodle soup'), ['campbells chicken noodle soup']);
+eq('dove sensitive skin body wash',
+   names('dove sensitive skin body wash'), ['dove sensitive skin body wash']);
+eq('eggo blueberry waffles',
+   names('eggo blueberry waffles'), ['eggo blueberry waffles']);
+eq('tide original scent pods',
+   names('tide original scent pods'), ['tide original scent pods']);
+
+/* The tail is not infinite. A bare staple after a product name is a new
+   item, not another flavour word — otherwise one brand swallows the list. */
+eq('a staple ends the tail',
+   names('blue bell vanilla and milk'), ['blue bell vanilla','milk']);
+eq('brand then staples',
+   names('doritos milk eggs'), ['doritos','milk','eggs']);
+eq('brand then brand',
+   names('tide charmin'), ['tide','charmin']);
+
+/* --- repair must not fire INSIDE a product name ---------------------------
+   The consonant-skeleton repair is for words the speaker's phone mangled at
+   the START of an item. Run it over the whole phrase and it eats the middle:
+   "haribo gold bears" became "haribo glad" + "breyers ..." because gold/glad
+   and bears/breyers collide on skeleton. Everything downstream of a brand is
+   off limits, and short words are never repaired at all. */
+eq('gold stays gold',  names('haribo gold bears gummy candy'), ['haribo gold bears gummy candy']);
+eq('repair still fires at the start',
+   names('buy harbough gummies'), ['haribo gummies']);
+/* "costco" here is the store, not an item — repair still has to fix both
+   of the items that follow it. */
+eq('...and on a later item',
+   names('costco tighed charmen'), ['tide','charmin']);
 
 // --- notes ----------------------------------------------------------------
 eq('parenthetical',  [P('milk (whole)').items[0].name, P('milk (whole)').items[0].note], ['milk','whole']);

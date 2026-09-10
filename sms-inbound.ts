@@ -746,6 +746,12 @@ const KNOWN_BRANDS = [
   'haribo','skittles','starburst','sour patch','twizzlers','hersheys',"hershey's",
   'reeses',"reese's",'kit kat','snickers','m&ms','m and ms','jolly ranchers',
   'airheads','swedish fish','gummy bears','gummy worms','tic tac','mentos',
+  'campbells',"campbell's",'progresso','pace','rotel','ro tel','bushs',"bush's",
+  'ocean spray','minute maid','simply orange','tropicana','silk','fairlife',
+  'sargento','kerrygold','land o lakes','philadelphia','breyers','haagen dazs',
+  'eggo','pillsbury','betty crocker','duncan hines','mccormick','old el paso',
+  'barilla','prego','ragu','knorr','lipton','folgers','maxwell house','keurig',
+  'starbucks','dunkin','community coffee','blue diamond','planters','emerald',
 ];
 
 /* Leading verbs that mean "put this on the list". Stripped before the items
@@ -844,7 +850,7 @@ function brandIndex() {
    Returns the corrected brand, or null when nothing is close enough. */
 function repairWord(word) {
   const w = String(word).toLowerCase().replace(/[^a-z]/g, '');
-  if (w.length < 4) return null;                 // too short to be sure
+  if (w.length < 5) return null;                 // shorter words collide too easily
   const cands = brandIndex().get(skeleton(w));
   if (!cands || !cands.length) return null;
   let best = null, bestD = Infinity;
@@ -882,6 +888,41 @@ const normTok = t => String(t).toLowerCase()
   .replace(/[.,!?;:]+$/, '').replace(/^["']+|["']+$/g, '');
 
 const BUILTIN = new Set([...KNOWN_ITEMS, ...KNOWN_BRANDS]);
+const BRAND_SET = new Set(KNOWN_BRANDS);
+
+/* ---------------------------------------------------------------------------
+ * A BRAND IS AN ADJECTIVE
+ *
+ * "Nutella sticks" is one thing to buy. So is "Tide pods", "Dove soap",
+ * "Haribo gummies", "Blue Bell vanilla". A brand almost never ends an item —
+ * it introduces one. Splitting on the longest known word alone gets this
+ * backwards and produces a brand with no product and a product with no
+ * meaning: "nutella" and "sticks", neither of which is findable in a store.
+ *
+ * So a brand absorbs what follows it, until something clearly starts a new
+ * item: another brand, a quantity, a filler word, or one of the core
+ * groceries below.
+ *
+ * CORE_STOP is deliberately short, and deliberately excludes the words that
+ * normally FOLLOW a brand — soap, detergent, towels, cereal, coffee, cheese.
+ * Those are what the brand is. It holds only words that are overwhelmingly
+ * their own item and almost never a descriptor, so "doritos milk eggs" still
+ * comes apart correctly.
+ *
+ * Erring toward merging is deliberate. A wrongly merged item is visible on
+ * the list and one tap from fixed; a wrongly split one leaves two rows that
+ * both look plausible and neither of which is real.
+ * -------------------------------------------------------------------------*/
+const CORE_STOP = new Set([
+  'milk','eggs','bread','bananas','apples','oranges','grapes','lettuce',
+  'tomatoes','potatoes','onions','carrots','celery','avocados','lemons','limes',
+  'chicken','beef','pork','bacon','salmon','shrimp','turkey',
+  'rice','pasta','water','juice','diapers','tylenol','batteries','gas',
+]);
+/* Long enough for brand + flavour + item ("Blue Bell homemade vanilla ice
+   cream" is five words past the brand). CORE_STOP is the real guard against
+   runaway merging; this only bounds the damage when nothing else fires. */
+const MAX_BRAND_TAIL = 6;
 
 /* Is this token something the parser recognises on its own? */
 const knownWord = t => BUILTIN.has(t) || catOf(t, null) !== 'other';
@@ -896,6 +937,13 @@ function looksMerged(phrase) {
   const toks = String(phrase).toLowerCase().split(/\s+/).filter(Boolean);
   if (toks.length < 2) return false;
   if (BUILTIN.has(toks.join(' '))) return false;      // a real multi-word product
+  /* A phrase that opens with a brand is a product name, however many of its
+     other words are recognisable. "Haribo gummies" was being rejected here,
+     which meant correcting it once never stuck — the catalog refused to learn
+     the very thing the correction was for. */
+  for (let n = Math.min(3, toks.length - 1); n >= 1; n--) {
+    if (BRAND_SET.has(toks.slice(0, n).join(' '))) return false;
+  }
   return toks.every(knownWord);
 }
 
@@ -969,10 +1017,40 @@ function splitRun(part, knownSet) {
     return m ? m[0].trim().split(/\s+/).length : 0;
   };
 
+  /* A brand ahead of position k, at any length it is written. */
+  const brandAt = k => {
+    for (let n = Math.min(3, toks.length - k); n >= 1; n--) {
+      if (BRAND_SET.has(phraseAt(k, n))) return n;
+    }
+    return 0;
+  };
+
   const chunks = [];
   let i = 0;
   while (i < toks.length) {
     if (isNoise(toks[i])) { i++; continue; }
+
+    /* Quotes settle it outright. "nutella sticks" is one item, whatever any
+       rule below would have decided. The escape hatch for anything the
+       lexicon has never heard of. */
+    const qm = toks[i].match(/^(["'])/);
+    if (qm) {
+      const mark = qm[1];
+      let j = i;
+      const acc = [];
+      while (j < toks.length) {
+        acc.push(toks[j]);
+        const t = toks[j];
+        const closes = j === i ? (t.length > 1 && t.endsWith(mark)) : t.endsWith(mark);
+        if (closes) break;
+        j++;
+      }
+      const quoted = acc.join(' ').replace(/^["']/, '').replace(/["']$/, '').trim();
+      i = j + 1;
+      if (quoted) { chunks.push(quoted); }
+      continue;
+    }
+
     const start = i;
     const q = qtyLen(i);
     if (q) i += q;
@@ -980,7 +1058,28 @@ function splitRun(part, knownSet) {
 
     const k = knownAt(i);
     if (k) {
+      const wasBrand = brandAt(i) === k;
       i += k;
+      /* A brand introduces a product; it does not end one. Absorb what
+         follows until something clearly begins a new item. */
+      if (wasBrand) {
+        let extra = 0;
+        while (i < toks.length && extra < MAX_BRAND_TAIL) {
+          if (isNoise(toks[i]) || qtyLen(i) || brandAt(i)) break;
+          /* Never cut a known product in half. "Blue Bell homemade vanilla
+             ice cream" ends in a two-word item; stopping on a token budget
+             mid-phrase left "…vanilla ice" and an orphan "cream". A known
+             phrase is taken whole or not at all. */
+          let phrase = 0;
+          for (let n = Math.min(MAX, toks.length - i); n >= 2; n--) {
+            if (knownSet.builtin.has(phraseAt(i, n)) ||
+                (knownSet.learned.has(phraseAt(i, n)) && !looksMerged(phraseAt(i, n)))) { phrase = n; break; }
+          }
+          if (phrase) { i += phrase; extra += phrase; continue; }
+          if (CORE_STOP.has(normTok(toks[i]))) break;
+          i++; extra++;
+        }
+      }
     } else {
       i++;
       while (i < toks.length && !knownAt(i) && !qtyLen(i) && !isNoise(toks[i])) i++;
@@ -1066,10 +1165,38 @@ function parseShopping(input, opts = {}) {
        broken brand names merge into one item — "tighed charmen" came out as a
        single row reading "tide charmin". Once each word is recognised, the
        splitter separates them on its own. */
-    body = body.split(/\s+/).map(tok => {
+    const bodyToks = body.split(/\s+/);
+    /* Which token positions sit inside a brand's product name. Recomputed
+       here rather than shared with splitRun, because repair has to run
+       BEFORE splitting — otherwise two mis-heard brands merge into one row. */
+    const brandRun = new Array(bodyToks.length).fill(false);
+    for (let k = 0; k < bodyToks.length; k++) {
+      let hit = 0;
+      for (let n = Math.min(3, bodyToks.length - k); n >= 1; n--) {
+        if (BRAND_SET.has(bodyToks.slice(k, k + n).map(normTok).join(' '))) { hit = n; break; }
+      }
+      if (!hit) continue;
+      for (let j = k + hit; j < bodyToks.length; j++) {
+        const t = normTok(bodyToks[j]);
+        if (isNoise(bodyToks[j]) || CORE_STOP.has(t)) break;
+        if (BRAND_SET.has(t)) break;
+        brandRun[j] = true;
+      }
+      k += hit - 1;
+    }
+    const inBrandRun = ix => brandRun[ix];
+
+    body = bodyToks.map((tok, ix) => {
       const bare = tok.toLowerCase().replace(/[^a-z]/g, '');
-      if (!bare || bare.length < 4) return tok;
+      if (!bare || bare.length < 5) return tok;
       if (knownWord(bare) || knownSet.builtin.has(bare) || knownSet.learned.has(bare)) return tok;
+      /* Everything inside a brand's product name is off limits. Those words
+         are flavours, sizes and variants, and repairing them corrupts the
+         name: "Haribo gold bears" came out as "Haribo glad bears" and then
+         "breyers gummy candy", because gold/Glad and bears/Breyers share a
+         consonant skeleton. Only a word that could BEGIN an item is a
+         candidate for repair. */
+      if (inBrandRun(ix)) return tok;
       const r = repairWord(bare);
       if (!r || r === bare) return tok;
       out.corrections.push({ from: tok, name: r });
@@ -1177,7 +1304,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-09a-stores';
+const BUILD = '2026-09-10b-flavor';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
