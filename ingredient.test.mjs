@@ -71,5 +71,41 @@ eq('block: headings and blanks dropped',
    splitIngredientBlock('Ingredients\n\nFor the sauce:\n2 cups milk\n1 tbsp butter\n\nFor the top:\n1 cup cheese'),
    ['2 cups milk','1 tbsp butter','1 cup cheese']);
 
+// --- Fire Crackers: the eight lines that broke the Need-to-buy list ---------
+/* Live rows, verbatim from Erich's only recipe. "½ tsp. Black pepper" had
+   become ". black pepper" (the unit's full stop left on the name), "1 ⅔ C."
+   had become qty 1 with "⅔" in the name, four spices had gone to produce and
+   been flagged pick-yourself, and two gallon Ziploc bags had become half a
+   gallon of bag. */
+const F = l => { const r = P(l); return { name: r.name, qty: r.qty == null ? null : +r.qty.toFixed(3), unit: r.unit, category: r.category }; };
+eq('½ tsp. Black pepper',   F('½ tsp. Black pepper'),   { name: 'black pepper', qty: 0.5, unit: 'tsp', category: 'baking' });
+eq('1 ⅔ C. Olive oil',      F('1 ⅔ C. Olive oil'),      { name: 'olive oil', qty: 1.667, unit: 'cup', category: 'pantry' });
+eq('2 Packages of ranch seasoning mix', F('2 Packages of ranch seasoning mix'), { name: 'ranch seasoning mix', qty: 2, unit: 'packages', category: 'condiments' });
+eq('1 tsp. Garlic powder',  F('1 tsp. Garlic powder'),  { name: 'garlic powder', qty: 1, unit: 'tsp', category: 'baking' });
+eq('3 Tbsp. Red pepper flakes', F('3 Tbsp. Red pepper flakes'), { name: 'red pepper flakes', qty: 3, unit: 'tbsp', category: 'baking' });
+eq('1 tsp. Onion powder',   F('1 tsp. Onion powder'),   { name: 'onion powder', qty: 1, unit: 'tsp', category: 'baking' });
+eq('1 Box of Saltine crackers', F('1 Box of Saltine crackers'), { name: 'saltine crackers', qty: 1, unit: 'box', category: 'pantry' });
+eq('2 Gallon Ziploc Bag',   F('2 Gallon Ziploc Bag'),   { name: 'ziploc bags', qty: 2, unit: null, category: 'household' });
+eq('...gallon is the size, in the note', P('2 Gallon Ziploc Bag').note, 'gallon');
+eq('spices are not picked by hand', P('1 tsp. Garlic powder').pickYourself, false);
+
+/* Must not regress. */
+eq('2 tsp. salt',           F('2 tsp. salt'),           { name: 'salt', qty: 2, unit: 'tsp', category: 'baking' });
+eq('1 C. sugar',            F('1 C. sugar'),            { name: 'sugar', qty: 1, unit: 'cup', category: 'pantry' });
+eq('1 1/2 cups flour',      F('1 1/2 cups flour'),      { name: 'flour', qty: 1.5, unit: 'cups', category: 'pantry' });
+eq('2 lbs. ground beef',    F('2 lbs. ground beef'),    { name: 'ground beef', qty: 2, unit: 'lbs', category: 'meat' });
+eq('1 (15 oz) can black beans, drained', F('1 (15 oz) can black beans, drained'), { name: 'black beans', qty: 1, unit: 'can', category: 'canned' });
+eq('...size and prep kept as the note', P('1 (15 oz) can black beans, drained').note, '15 oz; drained');
+/* The spice rule must leave fresh produce alone. */
+eq('green pepper is produce', P('1 green pepper').category, 'produce');
+eq('bell pepper is produce',  P('1 bell pepper').category, 'produce');
+eq('onions are produce',      P('2 onions').category, 'produce');
+eq('garlic cloves are produce', P('3 cloves garlic, minced').category, 'produce');
+eq('fresh basil is produce',  P('fresh basil').category, 'produce');
+eq('dried basil is a spice',  P('1 tsp dried basil').category, 'baking');
+eq('ground turkey is meat',   P('1 lb ground turkey').category, 'meat');
+eq('ground cumin is a spice', P('1 tsp ground cumin').category, 'baking');
+eq('a quart jar is one jar',  F('1 quart mason jar'), { name: 'mason jar', qty: 1, unit: null, category: 'other' });
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

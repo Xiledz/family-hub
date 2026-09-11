@@ -26,7 +26,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-11e';
+const APP_BUILD = '2026-09-11f';
 
 const state = {
   db: null, demo: isDemo(),
@@ -1221,6 +1221,59 @@ const MEAL = {
       recipe_steps: (x.recipe_steps || []).sort((a,b) => b.minutes_before_cook - a.minutes_before_cook)
     }));
     state.meals = m.data || [];
+    await MEAL.repairIngredients();
+  },
+
+  /* Rows saved by the old ingredient parser: ". black pepper" (a unit's full
+     stop left on the name), "⅔ c. olive oil" (a mixed fraction half-read),
+     "bag" with unit "gallon". The parser is JavaScript, so there is no SQL
+     path to fix them — this re-runs parseIngredient on `original` for any
+     row that shows the damage and writes back only what changed. Once per
+     session; a clean table costs one pass and zero writes. New saves go
+     through the fixed parser on the confirm screen, so this is for history. */
+  _repaired: false,
+  async repairIngredients(){
+    if (MEAL._repaired || state.demo) return;
+    MEAL._repaired = true;
+    const damaged = /^[^a-z0-9]|[½⅓⅔¼¾⅛⅜⅝⅞]|^(?:tsp|tbsp?|c|cups?|oz|lbs?|g|kg|ml|l|pt|qt|gal(?:lon)?s?|pkg)\b\.?/i;
+    let fixed = 0;
+    for (const r of state.recipes) {
+      for (const i of r.recipe_ingredients || []) {
+        if (!i.original) continue;
+        const bad = damaged.test(i.name || '') || (i.unit && /^(?:gallon|quart|pint)s?$/i.test(i.unit) && /\b(?:bag|jar|container)s?\b/i.test(i.name || ''));
+        if (!bad) continue;
+        /* catalog: [] on purpose — the household's memory of ". black
+           pepper" is the damage, not the truth. */
+        const p = parseIngredient(i.original, { catalog: [] });
+        const patch = { name: p.name, qty: p.qty, unit: p.unit, note: p.note };
+        const same = Object.keys(patch).every(k => (patch[k] ?? null) === (i[k] ?? null));
+        if (same || !p.name) continue;
+        const { error } = await state.db.from('recipe_ingredients').update(patch).eq('id', i.id);
+        if (error) { console.warn('ingredient repair failed', i.id, error); continue; }
+        const oldName = i.name;
+        Object.assign(i, patch); fixed++;
+
+        /* The category lives in shopping_catalog, keyed by name, and the
+           damaged name taught it garbage (". black pepper" → produce, pick
+           yourself). Teach the clean name, forget the damaged one. Only a
+           name that shows the damage is dropped — never a row a person typed. */
+        const clean = state.shopCatalog.find(c => c.name.toLowerCase() === p.name.toLowerCase());
+        if (!clean) {
+          await state.db.from('shopping_catalog').insert({
+            household_id: CONFIG.HOUSEHOLD_ID, name: p.name, category: p.category,
+            pick_yourself: !!p.pickYourself
+          }).then(() => {}, () => {});
+        } else if (clean.category === 'other' && p.category !== 'other') {
+          await state.db.from('shopping_catalog').update({ category: p.category, pick_yourself: !!p.pickYourself })
+            .eq('id', clean.id).then(() => {}, () => {});
+        }
+        if (oldName && damaged.test(oldName) && oldName.toLowerCase() !== p.name.toLowerCase()) {
+          await state.db.from('shopping_catalog').delete()
+            .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('name', oldName).then(() => {}, () => {});
+        }
+      }
+    }
+    if (fixed) { console.info(`repaired ${fixed} recipe ingredient rows`); await SHOP.load(); }
   },
 
   /* ---- import: URL or paste, through the edge function ---------------- */
@@ -1381,29 +1434,48 @@ const MEAL = {
     return data || [];
   },
 
-  async pushToList(mealId, need){
+  /* The Need-to-buy list is for SHOPPING, and nobody buys "¼ tsp black
+     pepper" — you buy black pepper. A spoon-sized unit, or a measured unit
+     scaled to less than one, is dropped from the list quantity; countable
+     and purchasable units (lb, oz, can, box, bag, bunch, a cup or more) are
+     kept. The recipe's own amount still shows on the have/need row. */
+  shopQty(i){
+    if (i.qty == null) return null;
+    const u = String(i.unit || '').toLowerCase();
+    if (/^(?:tsp|teaspoons?|tbsp|tablespoons?|pinch(?:es)?|dash(?:es)?|sprinkle|splash|drizzle)$/.test(u)) return null;
+    const measured = /^(?:cups?|oz|ounces?|fl\s*oz|lbs?|pounds?|g|grams?|kg|ml|l|liters?|litres?|pints?|quarts?|gallons?|sticks?)$/.test(u);
+    if (measured && i.qty < 1) return null;
+    return `${fmtQty(i.qty)}${u ? ' ' + u : ''}`;
+  },
+
+  async pushToList(mealId, need, dish = 'dinner'){
     /* need: [{name, qty, unit, category}] — dedupe on NAME alone. The list
        key elsewhere is store|name; a recipe push with a preferred store vs
-       an existing row with none would otherwise make two rows for one thing. */
+       an existing row with none would otherwise make two rows for one thing.
+       Every row says which dinner wanted it, so Jess knows why milk is on
+       the list. */
     const live = new Map(state.shopItems.filter(i => !i.got && !i.cleared_at)
       .map(i => [i.name.toLowerCase(), i]));
     const rows = [];
+    const why = `for ${dish}`;
     for (const n of need) {
       const key = n.name.toLowerCase();
       const cat = state.shopCatalog.find(c => c.name.toLowerCase() === key);
-      const qtyText = n.qty != null ? `${fmtQty(n.qty)}${n.unit ? ' ' + n.unit : ''}` : null;
+      const qtyText = MEAL.shopQty(n);
       if (live.has(key)) {
         /* Already on the list: fold the quantity into the note rather than
            make a second row. */
         const ex = live.get(key);
-        const note = [ex.note, qtyText ? `+${qtyText} for dinner` : 'for dinner'].filter(Boolean).join('; ');
+        if (ex.note && ex.note.includes(why)) continue;
+        const note = [ex.note, qtyText ? `+${qtyText} ${why}` : why].filter(Boolean).join('; ');
         await state.db.from('shopping_items').update({ note }).eq('id', ex.id);
         continue;
       }
       rows.push({
         household_id: CONFIG.HOUSEHOLD_ID, store_id: cat?.store_id ?? null,
         name: n.name, qty: qtyText, category: cat?.category || n.category || 'other',
-        note: n.note || null, pick_yourself: !!n.pickYourself, online_ok: !!n.onlineOk,
+        note: [n.note, why].filter(Boolean).join('; '),
+        pick_yourself: !!n.pickYourself, online_ok: !!n.onlineOk,
         added_by: state.me?.id || null, source: 'recipe', meal_id: mealId
       });
     }
@@ -1631,6 +1703,16 @@ function bindCookChips(body, onPick){
 }
 const pickedCook = body => body.querySelector('[data-cook][aria-pressed="true"]')?.dataset.cook || null;
 
+/* How many to plan for. A batch recipe is made as a batch: a 16-serving
+   tray of Fire Crackers planned "for 4" is a quarter tray of a snack, and a
+   quarter teaspoon of pepper on the shopping list. When the recipe serves
+   at least twice the household default, its own number wins. */
+function defaultServings(recipe){
+  const house = state.household?.default_servings ?? 4;
+  if (recipe?.servings && recipe.servings >= 2 * house) return recipe.servings;
+  return house;
+}
+
 function openPlanSheet(date, recipeId = null){
   const opts = state.recipes.map(r => `<option value="${r.id}"${r.id === recipeId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
   const html = `
@@ -1639,7 +1721,7 @@ function openPlanSheet(date, recipeId = null){
       <select id="p-recipe"><option value="">— something else —</option>${opts}</select>
       <input id="p-free" placeholder="e.g. pizza night, leftovers" style="margin-top:6px${recipeId ? ';display:none' : ''}"></div>
     <div class="frow">
-      <div class="f"><label>For how many</label><input id="p-serv" type="number" min="1" value="${state.household?.default_servings ?? 4}"></div>
+      <div class="f"><label>For how many</label><input id="p-serv" type="number" min="1" value="${defaultServings(state.recipes.find(r => r.id === recipeId))}"></div>
       <div class="f"><label>On the table by</label><input id="p-ready" type="time" value="${state.household?.default_dinner_at?.slice(0,5) ?? '18:00'}"></div>
     </div>
     <div class="f"><label>Cook</label>${cookChips(MEAL.defaultCook())}</div>
@@ -1647,7 +1729,10 @@ function openPlanSheet(date, recipeId = null){
     <div class="actions"><button type="button" id="p-go" class="primary">Plan dinner</button></div>`;
   openMSheet('Plan dinner', html, body => {
     const sel = body.querySelector('#p-recipe'), free = body.querySelector('#p-free');
-    sel.onchange = () => { free.style.display = sel.value ? 'none' : ''; };
+    sel.onchange = () => {
+      free.style.display = sel.value ? 'none' : '';
+      body.querySelector('#p-serv').value = defaultServings(state.recipes.find(r => r.id === sel.value));
+    };
     bindCookChips(body);
     body.querySelector('#p-go').onclick = async () => {
       const rid = sel.value || null;
@@ -1674,9 +1759,11 @@ async function openMealSheet(id){
 
   const rows = scaled.map((i, k) => {
     const d = MEAL.defaultHave(i.name);
-    const qty = i.qty != null ? `${fmtQty(i.qty)}${i.unit ? ' ' + i.unit : ''} ` : '';
+    /* Name first, amount after in a muted span, so the names line up and read
+       first — the amount is what the recipe uses, not what you buy. */
+    const qty = i.qty != null ? ` <span class="hnqty">· ${fmtQty(i.qty)}${i.unit ? ' ' + i.unit : ''}${i.note ? `, ${esc(i.note)}` : ''}</span>` : (i.note ? ` <span class="hnqty">· ${esc(i.note)}</span>` : '');
     return `<label class="hn"><input type="checkbox" data-need="${k}" ${d.have ? '' : 'checked'}>
-      <span class="hnname">${qty}${esc(i.name)}${i.optional ? ' <small>(optional)</small>' : ''}</span>
+      <span class="hnname">${esc(i.name)}${qty}${i.optional ? ' <small>(optional)</small>' : ''}</span>
       <span class="hnwhy">${d.why ? esc(d.why) : ''}</span>
       <button type="button" class="staple${d.why === 'staple' ? ' on' : ''}" data-staple="${esc(i.name)}" title="We always have this">★</button>
     </label>`;
@@ -1707,10 +1794,15 @@ async function openMealSheet(id){
         const i = scaled[+cb.dataset.need];
         const ing = r.recipe_ingredients.find(x => x.name === i.name);
         const cat = state.shopCatalog.find(c => c.name.toLowerCase() === i.name.toLowerCase());
-        return { name: i.name, qty: i.qty, unit: i.unit, note: i.note, category: cat?.category,
-                 pickYourself: ing?.pick_yourself, onlineOk: ing?.online_ok };
+        /* recipe_ingredients has no category or pick columns; the catalog
+           (by name) is the memory, and the parser is the fallback. */
+        const fresh = cat ? null : parseIngredient(ing?.original || i.name, { catalog: [] });
+        const pick = cat ? !!cat.pick_yourself : !!fresh?.pickYourself;
+        return { name: i.name, qty: i.qty, unit: i.unit, note: i.note,
+                 category: cat?.category || fresh?.category,
+                 pickYourself: pick, onlineOk: !pick };
       });
-      await MEAL.pushToList(id, need); closeMSheet(); render();
+      await MEAL.pushToList(id, need, r?.name || m.freeform || 'dinner'); closeMSheet(); render();
     };
     body.querySelectorAll('[data-staple]').forEach(b => b.onclick = async () => {
       const on = !b.classList.contains('on'); b.classList.toggle('on', on);

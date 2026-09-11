@@ -639,6 +639,15 @@ const CATEGORY_WORDS = [
   [/\b(?:jif|skippy|smuckers|nutella|welch'?s)\b/i, 'pantry'],
   [/\b(?:quaker|nature\s*valley|clif\s*bar|kind\s*bars?|rxbar|belvita)\b/i, 'breakfast'],
   [/\b(?:kraft|velveeta|heinz|hellmann'?s|french'?s|sriracha|hidden\s*valley|ranch\s*style)\b/i, 'condiments'],
+  /* Dried spices and herbs live on the baking aisle at HEB and Kroger
+     ("Baking & Spices"), never with the fresh onions the word rules below
+     would send them to. This has to run before produce: "garlic powder" is
+     not garlic and "red pepper flakes" are not a pepper. "ground" alone is
+     not a spice word — ground beef is meat — so it is named per spice.
+     Ranch is a dressing packet, on the condiments aisle, and is claimed
+     first so "ranch seasoning mix" does not become a spice. */
+  [/\branch\b/i, 'condiments'],
+  [/\b(?:paprika|cumin|oregano|thyme|rosemary|sage|dill\s*weed|cinnamon|nutmeg|cayenne|turmeric|allspice|cardamom|coriander|cloves?\b(?!\s+(?:of\s+)?garlic)|bay\s*lea(?:f|ves)|chili\s*powder|curry\s*powder|garlic\s*powder|onion\s*powder|garlic\s*salt|onion\s*salt|black\s*pepper|white\s*pepper|peppercorns?|(?:red\s*|crushed\s*)?pepper\s*flakes|(?:italian|taco|cajun|creole|poultry|steak|lemon\s*pepper)\s*seasoning|dried\s+\w+|ground\s+(?:cinnamon|cumin|ginger|cloves|nutmeg|pepper|coriander|mustard|allspice)|\w+\s+extract|kosher\s*salt|sea\s*salt|table\s*salt|\bsalt\b|seasoning|spices?)\b/i, 'baking'],
   [/\b(?:apple|banana|orange|lemon|lime|grape|berry|berries|strawberr|blueberr|melon|avocado|tomato|potato|onion|garlic|lettuce|spinach|kale|carrot|celery|pepper|cucumber|broccoli|cauliflower|zucchini|squash|mushroom|cilantro|parsley|basil|salad|produce|fruit|veg)/i, 'produce'],
   [/\b(?:bread|bagel|bun|roll|tortilla|pita|croissant|muffin|donut|cake|pie|bakery)/i, 'bakery'],
   [/\b(?:deli|lunch\s*meat|sandwich\s*meat|turkey\s*slices|salami|prosciutto|rotisserie)/i, 'deli'],
@@ -1844,7 +1853,19 @@ const UNIT_WORDS = [
   'slices','slice','pieces','piece','sprigs','sprig','stalks','stalk','ears','ear','loaves','loaf',
   'pinch','pinches','dash','dashes','handful','handfuls','splash','sprinkle','drizzle',
 ];
-const UNIT_RE = new RegExp('^(' + UNIT_WORDS.map(u => u.replace(/ /g,'\\s+')).join('|') + ')\\.?\\b\\s*', 'i');
+/* \b BEFORE the optional period. With the period first, "tsp. Black pepper"
+   found no word boundary after "." and backtracked to "tsp" + ". Black
+   pepper" — and every abbreviated unit in a recipe left its full stop on the
+   front of the ingredient's name. */
+const UNIT_RE = new RegExp('^(' + UNIT_WORDS.map(u => u.replace(/ /g,'\\s+')).join('|') + ')\\b\\.?\\s*', 'i');
+/* Recipe shorthand → the word the scaler knows. "C." is a cup; scale_qty()
+   in SQL only rounds to quarters for units it has heard of. */
+const UNIT_CANON = { c: 'cup', tb: 'tbsp', tbs: 'tbsp', pkg: 'package', gal: 'gallon', pt: 'pint', qt: 'quart' };
+
+/* A size in front of a container is a SIZE, not a unit. "2 Gallon Ziploc
+   Bag" is two bags, gallon-sized — never half a gallon of anything. */
+const SIZE_BEFORE_CONTAINER = /^(gallons?|quarts?|pints?|\d+(?:\.\d+)?\s*(?:fl\s*)?(?:oz|ounces?)\.?)\s+(?=(?:ziploc\s+|freezer\s+|storage\s+|mason\s+)?(?:bags?|jars?|containers?|pots?|bottles?|tubs?|cans?)\b)/i;
+const CONTAINER_PLURAL = { bag: 'bags', jar: 'jars', container: 'containers', pot: 'pots', bottle: 'bottles', tub: 'tubs', can: 'cans' };
 
 /* "1 1/2", "1½", "½", "1.5", "2", "1-2", "1 to 2" → a number, or null. */
 function readQty(s) {
@@ -1870,7 +1891,9 @@ function readQty(s) {
   return one(t);
 }
 
-const QTY_HEAD = /^((?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[½⅓⅔¼¾⅛⅜⅝⅞]?|[½⅓⅔¼¾⅛⅜⅝⅞])(?:\s*(?:-|–|to)\s*(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[½⅓⅔¼¾⅛⅜⅝⅞]?|[½⅓⅔¼¾⅛⅜⅝⅞]))?)\s*/;
+/* "1 ⅔" — a whole number, a space, a vulgar fraction — is how recipe sites
+   print one and two-thirds. It was reading as "1" with "⅔" left in the name. */
+const QTY_HEAD = /^((?:\d+\s+\d+\/\d+|\d+\s+[½⅓⅔¼¾⅛⅜⅝⅞]|\d+\/\d+|\d+(?:\.\d+)?[½⅓⅔¼¾⅛⅜⅝⅞]?|[½⅓⅔¼¾⅛⅜⅝⅞])(?:\s*(?:-|–|to)\s*(?:\d+\s+\d+\/\d+|\d+\s+[½⅓⅔¼¾⅛⅜⅝⅞]|\d+\/\d+|\d+(?:\.\d+)?[½⅓⅔¼¾⅛⅜⅝⅞]?|[½⅓⅔¼¾⅛⅜⅝⅞]))?)\s*/;
 
 /* opts: { catalog }  — same catalog the shopping parser trusts. */
 export function parseIngredient(line, opts = {}) {
@@ -1896,8 +1919,20 @@ export function parseIngredient(line, opts = {}) {
      note so the cook still sees it, but never multiply it. */
   if ((m = t.match(/^\(([^)]*)\)\s*/))) { notes.push(m[1]); t = t.slice(m[0].length); }
 
+  /* A size before a container: "2 Gallon Ziploc Bag" → 2 × "ziploc bags",
+     note "gallon". Checked before the unit rule, which would otherwise read
+     half a gallon of bag. */
+  if ((m = t.match(SIZE_BEFORE_CONTAINER))) {
+    notes.push(m[1].toLowerCase().replace(/\.$/, ''));
+    t = t.slice(m[0].length);
+    if ((out.qty ?? 1) > 1) t = t.replace(/\b(bag|jar|container|pot|bottle|tub|can)\b(?!s)/i, w => CONTAINER_PLURAL[w.toLowerCase()] || w);
+  }
   /* Unit. */
-  if ((m = t.match(UNIT_RE))) { out.unit = m[1].toLowerCase().replace(/\s+/g,' '); t = t.slice(m[0].length); }
+  else if ((m = t.match(UNIT_RE))) {
+    const u = m[1].toLowerCase().replace(/\s+/g,' ');
+    out.unit = UNIT_CANON[u] || u;
+    t = t.slice(m[0].length);
+  }
   t = t.replace(/^of\s+/i, '');
 
   /* Trailing prep notes: ", chopped" / ", divided" / "(about 2 cups)". */
@@ -1918,13 +1953,20 @@ export function parseIngredient(line, opts = {}) {
     out.pickYourself = !!it.pickYourself; out.onlineOk = !!it.onlineOk;
   } else {
     /* The list parser split it — "diced tomatoes" into "diced" + "tomatoes".
-       An ingredient line is ONE item by definition, so keep the phrase whole
-       and borrow the most specific category any piece produced. */
+       An ingredient line is ONE item by definition, so keep the phrase whole.
+       Classify the WHOLE phrase first: "black pepper" is a spice, and only
+       its second half is a vegetable. Fall back to the most specific
+       category any piece produced. */
     out.name = t.toLowerCase().replace(/[.,;:]+$/, '');
-    const best = shop.items.find(i => i.category !== 'other');
-    if (best) {
-      out.category = best.category;
-      out.pickYourself = !!best.pickYourself; out.onlineOk = !!best.onlineOk;
+    const whole = catOf(out.name, opts.catalog || []);
+    if (whole !== 'other') {
+      out.category = whole; Object.assign(out, freshness(whole));
+    } else {
+      const best = shop.items.find(i => i.category !== 'other');
+      if (best) {
+        out.category = best.category;
+        out.pickYourself = !!best.pickYourself; out.onlineOk = !!best.onlineOk;
+      }
     }
   }
   return out;
