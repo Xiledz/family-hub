@@ -106,6 +106,17 @@ try{var t=localStorage.getItem('fh.theme');if(t&&t!=='auto')document.documentEle
 <button class="fab hide" id="fab" aria-label="Add event">+</button>
 
 <!-- ============ event sheet ============ -->
+<!-- Generic bottom sheet. The event sheet above is a fixed form; this one
+     takes whatever the Meals module renders into it. -->
+<div class="sheet" id="msheet">
+  <div class="scrim" data-mclose></div>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="msheet-title">
+    <div class="grab"></div>
+    <h2 id="msheet-title"></h2>
+    <div id="msheet-body"></div>
+  </div>
+</div>
+
 <div class="sheet" id="sheet">
   <div class="scrim" data-close></div>
   <div class="panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">

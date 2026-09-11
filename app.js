@@ -3,7 +3,7 @@
  * No build step. Native ES modules, loaded straight from GitHub Pages.
  * ==========================================================================*/
 import { CONFIG, isDemo } from './config.js';
-import { parseQuickAdd, describe, parseShopping, parseTodo } from './parse.js';
+import { parseQuickAdd, describe, parseShopping, parseTodo, parseIngredient, splitIngredientBlock } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
 
 const $  = s => document.querySelector(s);
@@ -31,7 +31,9 @@ const state = {
   module: 'calendar', view: 'today', cursor: null,   // cursor = the date each view is centred on
   editing: null, editingOccurrence: null, parsed: null, pendingScope: null,
   // shopping
-  stores: [], shopItems: [], shopCatalog: [], shopAisles: [], shopStore: null, shopCats: []
+  stores: [], shopItems: [], shopCatalog: [], shopAisles: [], shopStore: null, shopCats: [],
+  // meals
+  recipes: [], meals: [], mealWeek: null, importing: null
 };
 
 const REPEATS = [
@@ -426,6 +428,7 @@ function render(){
 
   if (state.module === 'shopping') { $('#viewbar').classList.add('hide'); return renderShopping(); }
   if (state.module === 'todos')    { $('#viewbar').classList.add('hide'); return renderTodos(); }
+  if (state.module === 'meals')    { $('#viewbar').classList.add('hide'); return renderMeals(); }
   if (state.module !== 'calendar') { $('#viewbar').classList.add('hide'); return renderPlaceholder(); }
 
   $('#viewbar').classList.remove('hide');
@@ -1166,6 +1169,505 @@ function bindDrag(list){
   });
 }
 
+
+/* ==========================================================================
+ * MEALS
+ *
+ * Recipes and the dinner countdown are one feature, and the object both
+ * need is the MEAL. "Monday, tacos, ready by 5:55" is what pushes
+ * ingredients onto the shopping list and what anchors the countdown, so it
+ * is said once, here.
+ *
+ * WHERE RECIPES COME FROM
+ *   A link, or a paste. A Pinterest pin is a pointer to a blog, and the
+ *   recipe-import function follows that pointer itself — the pin's own
+ *   structured data names the source — then reads the blog's recipe. So a
+ *   pin link pasted straight from Pinterest's Share sheet is enough. Family
+ *   recipes get pasted as text. Both land on the same confirm screen, and
+ *   NOTHING is saved until somebody looks at it and taps.
+ *
+ * WHAT IS DELIBERATELY NOT HERE
+ *   A pantry. Knowing what is in the cupboard requires logging the can of
+ *   beans you used, and nobody does, so it rots and then lies. What works is
+ *   a have/need tap at plan time with sane defaults — staples default to
+ *   "have", things bought lately default to "have?", the rest to "need".
+ * ======================================================================== */
+const MEAL = {
+  async load(){
+    if (state.demo) { state.recipes = []; state.meals = []; return; }
+    const from = new Date(); from.setDate(from.getDate() - 7);
+    const [r, m] = await Promise.all([
+      state.db.from('recipes').select('*, recipe_ingredients(*), recipe_steps(*)')
+        .eq('household_id', CONFIG.HOUSEHOLD_ID).is('deleted_at', null).order('name'),
+      state.db.from('meal_plan').select('*, recipes(name, servings, cook_minutes, image_url)')
+        .eq('household_id', CONFIG.HOUSEHOLD_ID).is('deleted_at', null)
+        .gte('plan_date', ymd(from)).order('plan_date')
+    ]);
+    state.recipes = (r.data || []).map(x => ({
+      ...x,
+      recipe_ingredients: (x.recipe_ingredients || []).sort((a,b) => a.sort_order - b.sort_order),
+      recipe_steps: (x.recipe_steps || []).sort((a,b) => b.minutes_before_cook - a.minutes_before_cook)
+    }));
+    state.meals = m.data || [];
+  },
+
+  /* ---- import: URL or paste, through the edge function ---------------- */
+  async fetchDraft(input){
+    const isUrl = /^https?:\/\/\S+$/i.test(input.trim());
+    const body  = isUrl ? { url: input.trim() } : { text: input };
+    const res = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/recipe-import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json',
+                 'Authorization': `Bearer ${CONFIG.SUPABASE_ANON}`, 'apikey': CONFIG.SUPABASE_ANON },
+      body: JSON.stringify(body)
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.message || j.error || `import failed (${res.status})`);
+    return j;
+  },
+
+  /* Turn a draft's ingredient strings into rows, through the same parser
+     the shopping list uses so names line up with the catalog. */
+  draftToRecipe(d){
+    const ings = (d.ingredients || []).map((line, i) => {
+      const p = parseIngredient(line, { catalog: state.shopCatalog });
+      return { name: p.name, original: p.original, qty: p.qty, unit: p.unit,
+               note: p.note, optional: p.optional, sort_order: i, category: p.category };
+    });
+    return {
+      name: d.name || '', servings: d.servings ?? null,
+      cook_minutes: d.cook_minutes ?? d.total_minutes ?? 30,
+      prep_note: d.prep_minutes ? `Prep about ${d.prep_minutes} min` : null,
+      instructions: d.instructions || [], image_url: d.image || null,
+      source_url: d.source_url || null, source: d.method || 'manual',
+      ingredients: ings, steps: []
+    };
+  },
+
+  async saveRecipe(rec, existingId = null){
+    const row = {
+      household_id: CONFIG.HOUSEHOLD_ID, name: rec.name.trim(), servings: rec.servings || null,
+      cook_minutes: rec.cook_minutes ?? 30, prep_note: rec.prep_note || null,
+      instructions: rec.instructions || [], image_url: rec.image_url || null,
+      source_url: rec.source_url || null, source: rec.source || 'manual',
+      created_by: state.me?.id || null, updated_at: new Date().toISOString()
+    };
+    let id = existingId;
+    if (id) {
+      const { error } = await state.db.from('recipes').update(row).eq('id', id);
+      if (error) throw error;
+      await state.db.from('recipe_ingredients').delete().eq('recipe_id', id);
+      await state.db.from('recipe_steps').delete().eq('recipe_id', id);
+    } else {
+      const { data, error } = await state.db.from('recipes').insert(row).select('id').single();
+      if (error) throw error;
+      id = data.id;
+    }
+    const ings = (rec.ingredients || []).filter(i => i.name).map((i, k) => ({
+      recipe_id: id, name: i.name, original: i.original || i.name, qty: i.qty ?? null,
+      unit: i.unit || null, note: i.note || null, optional: !!i.optional, sort_order: k
+    }));
+    if (ings.length) { const { error } = await state.db.from('recipe_ingredients').insert(ings); if (error) throw error; }
+    const steps = (rec.steps || []).filter(s => s.label && s.minutes_before_cook >= 0).map((s, k) => ({
+      recipe_id: id, label: s.label, minutes_before_cook: +s.minutes_before_cook, sort_order: k
+    }));
+    if (steps.length) { const { error } = await state.db.from('recipe_steps').insert(steps); if (error) throw error; }
+    /* Teach the catalog anything new, same guard as the shopping list. */
+    for (const i of ings) {
+      if (state.shopCatalog.find(c => c.name.toLowerCase() === i.name.toLowerCase())) continue;
+      const src = (rec.ingredients || []).find(x => x.name === i.name);
+      await state.db.from('shopping_catalog').insert({
+        household_id: CONFIG.HOUSEHOLD_ID, name: i.name, category: src?.category || 'other'
+      }).then(() => {}, () => {});
+    }
+    await SHOP.load(); await MEAL.load();
+    return id;
+  },
+
+  async deleteRecipe(id){
+    await state.db.from('recipes').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    await MEAL.load(); render();
+  },
+
+  /* ---- planning --------------------------------------------------------- */
+  async plan(date, recipeId, opts = {}){
+    const rec = state.recipes.find(r => r.id === recipeId);
+    const row = {
+      household_id: CONFIG.HOUSEHOLD_ID, plan_date: date, slot: 'dinner',
+      recipe_id: recipeId || null, freeform: recipeId ? null : (opts.freeform || 'Dinner'),
+      servings: opts.servings ?? (state.household?.default_servings ?? 4),
+      ready_by: opts.ready_by || null, cook_id: state.me?.id || null,
+      created_by: state.me?.id || null
+    };
+    const { data, error } = await state.db.from('meal_plan')
+      .upsert(row, { onConflict: 'household_id,plan_date,slot' }).select('id').single();
+    if (error) { console.error(error); toast('Could not plan that'); return null; }
+    await MEAL.load(); render();
+    return data.id;
+  },
+
+  async unplan(id){
+    /* Un-bought items that came from this meal come off the list with it. */
+    await state.db.from('shopping_items').delete().eq('meal_id', id).eq('got', false);
+    await state.db.from('meal_plan').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    await SHOP.load(); await MEAL.load(); render();
+  },
+
+  async setMealDone(id, done){
+    await state.db.from('meal_plan').update({
+      done_at: done ? new Date().toISOString() : null, done_by: done ? (state.me?.id || null) : null
+    }).eq('id', id);
+    await MEAL.load(); render();
+  },
+
+  /* ---- have / need ------------------------------------------------------ */
+  /* Default for one ingredient: staple → have; bought in the last N days →
+     have (with the date shown); otherwise need. A hint, never a truth. */
+  defaultHave(name){
+    const cat = state.shopCatalog.find(c => c.name.toLowerCase() === name.toLowerCase());
+    if (cat?.staple) return { have: true, why: 'staple' };
+    const recent = state.shopItems
+      .filter(i => i.got && i.name.toLowerCase() === name.toLowerCase() && i.got_at)
+      .sort((a,b) => new Date(b.got_at) - new Date(a.got_at))[0];
+    if (recent) {
+      const days = (Date.now() - new Date(recent.got_at)) / 86400000;
+      const window = ['produce','meat','dairy','bakery','eggs'].includes(cat?.category) ? 7 : 45;
+      if (days <= window) return { have: true, why: `bought ${Math.round(days)}d ago` };
+    }
+    return { have: false, why: null };
+  },
+
+  async scaledIngredients(mealId){
+    const { data, error } = await state.db.rpc('meal_ingredients', { p_meal: mealId });
+    if (error) { console.warn(error); return []; }
+    return data || [];
+  },
+
+  async pushToList(mealId, need){
+    /* need: [{name, qty, unit, category}] — dedupe on NAME alone. The list
+       key elsewhere is store|name; a recipe push with a preferred store vs
+       an existing row with none would otherwise make two rows for one thing. */
+    const live = new Map(state.shopItems.filter(i => !i.got && !i.cleared_at)
+      .map(i => [i.name.toLowerCase(), i]));
+    const rows = [];
+    for (const n of need) {
+      const key = n.name.toLowerCase();
+      const cat = state.shopCatalog.find(c => c.name.toLowerCase() === key);
+      const qtyText = n.qty != null ? `${fmtQty(n.qty)}${n.unit ? ' ' + n.unit : ''}` : null;
+      if (live.has(key)) {
+        /* Already on the list: fold the quantity into the note rather than
+           make a second row. */
+        const ex = live.get(key);
+        const note = [ex.note, qtyText ? `+${qtyText} for dinner` : 'for dinner'].filter(Boolean).join('; ');
+        await state.db.from('shopping_items').update({ note }).eq('id', ex.id);
+        continue;
+      }
+      rows.push({
+        household_id: CONFIG.HOUSEHOLD_ID, store_id: cat?.store_id ?? null,
+        name: n.name, qty: qtyText, category: cat?.category || n.category || 'other',
+        note: n.note || null, pick_yourself: !!n.pickYourself, online_ok: !!n.onlineOk,
+        added_by: state.me?.id || null, source: 'recipe', meal_id: mealId
+      });
+    }
+    if (rows.length) {
+      const { error } = await state.db.from('shopping_items').insert(rows);
+      if (error) { console.error(error); toast('Could not add to the list'); return; }
+    }
+    await SHOP.load();
+    toast(`${rows.length} added to the list`);
+  },
+
+  async setStaple(name, staple){
+    await state.db.from('shopping_catalog').update({ staple })
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('name', name);
+    await SHOP.load();
+  }
+};
+
+/* 1.5 → "1½", 0.25 → "¼", 2 → "2", 0.33 → "⅓" */
+function fmtQty(q){
+  if (q == null) return '';
+  const whole = Math.floor(q), frac = q - whole;
+  const F = [[0.125,'⅛'],[0.25,'¼'],[1/3,'⅓'],[0.375,'⅜'],[0.5,'½'],[0.625,'⅝'],[2/3,'⅔'],[0.75,'¾'],[0.875,'⅞']];
+  const near = F.find(([v]) => Math.abs(frac - v) < 0.03);
+  if (frac < 0.03) return String(whole);
+  if (near) return (whole ? whole : '') + near[1];
+  return String(Math.round(q * 100) / 100);
+}
+
+/* ---- the generic sheet ------------------------------------------------- */
+const msheet = $('#msheet');
+function openMSheet(title, html, bind){
+  $('#msheet-title').textContent = title;
+  $('#msheet-body').innerHTML = html;
+  msheet.classList.add('on');
+  if (bind) bind($('#msheet-body'));
+}
+function closeMSheet(){ msheet.classList.remove('on'); $('#msheet-body').innerHTML = ''; }
+if (msheet) msheet.querySelector('[data-mclose]').onclick = closeMSheet;
+
+/* ---- rendering ---------------------------------------------------------- */
+function renderMeals(){
+  $('#qa').classList.add('hide');
+  const today = ymd(new Date());
+  if (!state.mealWeek) { const d = new Date(); d.setDate(d.getDate() - d.getDay()); state.mealWeek = ymd(d); }
+  const start = new Date(state.mealWeek + 'T12:00:00');
+  const days = [...Array(7)].map((_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return ymd(d); });
+
+  const mealOn = d => state.meals.find(m => m.plan_date === d && m.slot === 'dinner');
+  const dayRow = d => {
+    const m = mealOn(d);
+    const lbl = new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+    const title = m ? (m.recipes?.name || m.freeform) : '';
+    return `<div class="mday${d === today ? ' today' : ''}${m?.done_at ? ' mdone' : ''}" data-day="${d}">
+      <span class="mdate">${lbl}</span>
+      ${m ? `<button class="mname" data-meal="${m.id}">${esc(title)}${m.ready_by ? `<small> · ${clock12(m.ready_by)}</small>` : ''}</button>
+             <button class="tick" data-mealtick="${m.id}" aria-label="Done">${m.done_at ? '✓' : ''}</button>`
+          : `<button class="mplan" data-plan="${d}">+ plan</button>`}
+    </div>`;
+  };
+
+  const card = r => `<button class="rcard" data-recipe="${r.id}">
+      ${r.image_url ? `<img src="${esc(r.image_url)}" alt="" loading="lazy">` : '<span class="rimg"></span>'}
+      <span class="rname">${esc(r.name)}</span>
+      <span class="rmeta">${r.servings ? `serves ${r.servings} · ` : ''}${r.cook_minutes} min${r.recipe_steps?.length ? ' · countdown' : ''}</span>
+    </button>`;
+
+  $('#bento').innerHTML = `
+    <div class="col">
+      <section class="card">
+        <div class="ch"><span>This week</span>
+          <span><button class="link" data-wk="-7">‹</button> <button class="link" data-wk="0">today</button> <button class="link" data-wk="7">›</button></span></div>
+        ${days.map(dayRow).join('')}
+      </section>
+      <section class="card">
+        <div class="ch"><span>Recipes</span><b>${state.recipes.length}</b></div>
+        <form id="radd" class="tadd">
+          <input id="rin" placeholder="Paste a recipe link, or type a name…" autocomplete="off">
+          <button>Add</button>
+        </form>
+        <p class="hint">Pinterest: Share → <b>Copy link</b>, paste it here. Any recipe site works too. Family recipes: type the name, then paste the ingredients.</p>
+        ${state.recipes.length ? `<div class="rgrid">${state.recipes.map(card).join('')}</div>` : ''}
+      </section>
+    </div>`;
+
+  $$('[data-wk]').forEach(b => b.onclick = () => {
+    if (b.dataset.wk === '0') { state.mealWeek = null; }
+    else { const d = new Date(state.mealWeek + 'T12:00:00'); d.setDate(d.getDate() + (+b.dataset.wk)); state.mealWeek = ymd(d); }
+    render();
+  });
+  $$('[data-plan]').forEach(b => b.onclick = () => openPlanSheet(b.dataset.plan));
+  $$('[data-meal]').forEach(b => b.onclick = () => openMealSheet(b.dataset.meal));
+  $$('[data-mealtick]').forEach(b => b.onclick = () => {
+    const m = state.meals.find(x => x.id === b.dataset.mealtick); MEAL.setMealDone(m.id, !m.done_at);
+  });
+  $$('[data-recipe]').forEach(b => b.onclick = () => openRecipeSheet(b.dataset.recipe));
+  $('#radd').onsubmit = async e => {
+    e.preventDefault();
+    const v = $('#rin').value.trim(); if (!v) return;
+    $('#rin').value = '';
+    await startImport(v);
+  };
+}
+
+const clock12 = t => { const [h, m] = String(t).split(':').map(Number);
+  return `${h % 12 || 12}${m ? ':' + String(m).padStart(2,'0') : ''}${h < 12 ? 'am' : 'pm'}`; };
+
+/* A link → fetch a draft. A name → an empty draft to fill in. Either way,
+   the confirm screen. */
+async function startImport(input){
+  const isUrl = /^https?:\/\/\S+$/i.test(input);
+  if (isUrl) {
+    toast('Reading the recipe…');
+    try {
+      const d = await MEAL.fetchDraft(input);
+      openConfirmSheet(MEAL.draftToRecipe(d), d.method);
+    } catch (err) {
+      openConfirmSheet({ name: '', servings: null, cook_minutes: 30, instructions: [], ingredients: [],
+                         steps: [], source_url: input, source: 'manual' }, 'none', String(err.message || err));
+    }
+  } else {
+    openConfirmSheet({ name: input, servings: null, cook_minutes: 30, instructions: [],
+                       ingredients: [], steps: [], source: 'manual' }, 'manual');
+  }
+}
+
+/* The confirm screen. Nothing is saved until Save is tapped. */
+function openConfirmSheet(rec, method, errMsg = null, existingId = null){
+  const ingText = rec.ingredients.map(i => i.original || i.name).join('\n');
+  const insText = (rec.instructions || []).join('\n');
+  const stepRows = (rec.steps || []).map(s => `${s.label} | ${s.minutes_before_cook}`).join('\n');
+  const how = { jsonld: 'Read from the page', microdata: 'Read from the page', heading: 'Read from the page (best guess)',
+                paste: 'From your paste', manual: '', none: "Couldn't read the ingredients from this page — paste them below." }[method] || '';
+  const html = `
+    ${errMsg ? `<p class="warn">${esc(errMsg)}</p>` : ''}
+    ${how ? `<p class="hint">${esc(how)}</p>` : ''}
+    <div class="f"><label>Name</label><input id="c-name" value="${esc(rec.name || '')}"></div>
+    <div class="frow">
+      <div class="f"><label>Serves</label><input id="c-serv" type="number" min="1" max="100" value="${rec.servings ?? ''}" placeholder="—"></div>
+      <div class="f"><label>Cook time (min)</label><input id="c-cook" type="number" min="0" value="${rec.cook_minutes ?? 30}"></div>
+    </div>
+    <div class="f"><label>Ingredients — one per line</label>
+      <textarea id="c-ing" rows="8" placeholder="2 lbs ground beef&#10;1 packet taco seasoning&#10;8 tortillas">${esc(ingText)}</textarea></div>
+    <div class="f"><label>Directions — one step per line</label>
+      <textarea id="c-ins" rows="6">${esc(insText)}</textarea></div>
+    <div class="f"><label>Countdown steps — <i>what</i> | <i>minutes before cooking</i></label>
+      <textarea id="c-steps" rows="3" placeholder="Take the beef out to thaw | 60&#10;Preheat the oven | 5">${esc(stepRows)}</textarea>
+      <p class="hint">Every step is measured from when cooking starts. Thaw for an hour = 60. Preheat = 5.</p></div>
+    ${rec.source_url ? `<p class="hint">Source: <a href="${esc(rec.source_url)}" target="_blank" rel="noopener">${esc(rec.source_url.replace(/^https?:\/\//,'').slice(0,50))}</a></p>` : ''}
+    <div class="actions">
+      ${existingId ? `<button type="button" class="danger" id="c-del">Delete</button>` : ''}
+      <button type="button" id="c-save" class="primary">Save recipe</button>
+    </div>`;
+  openMSheet(existingId ? 'Edit recipe' : 'New recipe', html, body => {
+    body.querySelector('#c-save').onclick = async () => {
+      const lines = splitIngredientBlock(body.querySelector('#c-ing').value);
+      const ings  = lines.map((l, i) => { const p = parseIngredient(l, { catalog: state.shopCatalog });
+        return { ...p, sort_order: i }; });
+      const steps = body.querySelector('#c-steps').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
+        const [label, mins] = l.split('|').map(x => x.trim());
+        return { label, minutes_before_cook: parseInt(mins, 10) || 0 };
+      }).filter(s => s.label);
+      const out = {
+        name: body.querySelector('#c-name').value, servings: +body.querySelector('#c-serv').value || null,
+        cook_minutes: +body.querySelector('#c-cook').value || 30,
+        instructions: body.querySelector('#c-ins').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean),
+        image_url: rec.image_url, source_url: rec.source_url, source: rec.source,
+        prep_note: rec.prep_note, ingredients: ings, steps
+      };
+      if (!out.name.trim()) { toast('Give it a name'); return; }
+      try { await MEAL.saveRecipe(out, existingId); closeMSheet(); render(); toast('Saved'); }
+      catch (e) { console.error(e); toast(e.message?.includes('recipes_source_url_uniq') ? 'That link is already saved' : 'Could not save'); }
+    };
+    const del = body.querySelector('#c-del');
+    if (del) del.onclick = () => { if (confirm('Delete this recipe?')) { MEAL.deleteRecipe(existingId); closeMSheet(); } };
+  });
+}
+
+/* A recipe, readable. This is the cookbook page: the directions live here. */
+function openRecipeSheet(id){
+  const r = state.recipes.find(x => x.id === id); if (!r) return;
+  const html = `
+    ${r.image_url ? `<img class="rhero" src="${esc(r.image_url)}" alt="">` : ''}
+    <p class="rmeta">${r.servings ? `Serves ${r.servings} · ` : ''}${r.cook_minutes} min${r.prep_note ? ` · ${esc(r.prep_note)}` : ''}</p>
+    <h3>Ingredients</h3>
+    <ul class="ring">${r.recipe_ingredients.map(i => `<li>${esc(i.original || i.name)}${i.optional ? ' <small>(optional)</small>' : ''}</li>`).join('')}</ul>
+    ${r.instructions?.length ? `<h3>Directions</h3><ol class="rins">${r.instructions.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
+    ${r.recipe_steps?.length ? `<h3>Countdown</h3><ul class="ring">${r.recipe_steps.map(s => `<li>${esc(s.label)} <small>— ${s.minutes_before_cook} min before cooking</small></li>`).join('')}</ul>` : ''}
+    ${r.source_url ? `<p class="hint"><a href="${esc(r.source_url)}" target="_blank" rel="noopener">View original</a></p>` : ''}
+    <div class="actions">
+      <button type="button" id="r-edit">Edit</button>
+      <button type="button" id="r-plan" class="primary">Plan it</button>
+    </div>`;
+  openMSheet(r.name, html, body => {
+    body.querySelector('#r-edit').onclick = () => openConfirmSheet({
+      name: r.name, servings: r.servings, cook_minutes: r.cook_minutes, prep_note: r.prep_note,
+      instructions: r.instructions || [], image_url: r.image_url, source_url: r.source_url, source: r.source,
+      ingredients: r.recipe_ingredients, steps: r.recipe_steps
+    }, r.source, null, r.id);
+    body.querySelector('#r-plan').onclick = () => openPlanSheet(ymd(new Date()), r.id);
+  });
+}
+
+/* Pick a recipe (or type "pizza night"), a day, how many, and when it needs
+   to be on the table. That is the whole form. */
+function openPlanSheet(date, recipeId = null){
+  const opts = state.recipes.map(r => `<option value="${r.id}"${r.id === recipeId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
+  const html = `
+    <div class="f"><label>Day</label><input id="p-date" type="date" value="${date}"></div>
+    <div class="f"><label>What</label>
+      <select id="p-recipe"><option value="">— something else —</option>${opts}</select>
+      <input id="p-free" placeholder="e.g. pizza night, leftovers" style="margin-top:6px${recipeId ? ';display:none' : ''}"></div>
+    <div class="frow">
+      <div class="f"><label>For how many</label><input id="p-serv" type="number" min="1" value="${state.household?.default_servings ?? 4}"></div>
+      <div class="f"><label>On the table by</label><input id="p-ready" type="time" value="${state.household?.default_dinner_at?.slice(0,5) ?? '18:00'}"></div>
+    </div>
+    <p class="hint">Set the time and the countdown works backwards from it: cooking starts <i>cook time</i> before, and each prep step before that.</p>
+    <div class="actions"><button type="button" id="p-go" class="primary">Plan dinner</button></div>`;
+  openMSheet('Plan dinner', html, body => {
+    const sel = body.querySelector('#p-recipe'), free = body.querySelector('#p-free');
+    sel.onchange = () => { free.style.display = sel.value ? 'none' : ''; };
+    body.querySelector('#p-go').onclick = async () => {
+      const rid = sel.value || null;
+      const id = await MEAL.plan(body.querySelector('#p-date').value, rid, {
+        freeform: free.value.trim() || 'Dinner',
+        servings: +body.querySelector('#p-serv').value || null,
+        ready_by: body.querySelector('#p-ready').value || null
+      });
+      closeMSheet();
+      if (id && rid) openMealSheet(id);          // straight to have/need
+    };
+  });
+}
+
+/* The meal: have/need, push to list, the countdown as it will fire. */
+async function openMealSheet(id){
+  const m = state.meals.find(x => x.id === id); if (!m) return;
+  const r = state.recipes.find(x => x.id === m.recipe_id);
+  const scaled = r ? await MEAL.scaledIngredients(id) : [];
+  const factor = scaled[0]?.factor ?? 1;
+  const { data: rem } = state.demo ? { data: [] } : await state.db.from('reminders')
+    .select('label, fire_at, sent_at').eq('meal_id', id).order('fire_at');
+
+  const rows = scaled.map((i, k) => {
+    const d = MEAL.defaultHave(i.name);
+    const qty = i.qty != null ? `${fmtQty(i.qty)}${i.unit ? ' ' + i.unit : ''} ` : '';
+    return `<label class="hn"><input type="checkbox" data-need="${k}" ${d.have ? '' : 'checked'}>
+      <span class="hnname">${qty}${esc(i.name)}${i.optional ? ' <small>(optional)</small>' : ''}</span>
+      <span class="hnwhy">${d.why ? esc(d.why) : ''}</span>
+      <button type="button" class="staple${d.why === 'staple' ? ' on' : ''}" data-staple="${esc(i.name)}" title="We always have this">★</button>
+    </label>`;
+  }).join('');
+
+  const when = x => new Date(x).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' });
+  const html = `
+    <p class="rmeta">${new Date(m.plan_date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'})}
+      ${m.ready_by ? ` · on the table by ${clock12(m.ready_by)}` : ''}${m.servings ? ` · for ${m.servings}` : ''}
+      ${factor !== 1 ? ` · <b>×${fmtQty(factor)}</b>` : ''}</p>
+    ${r ? `<h3>Need to buy <small>— tick what you don't have</small></h3><div class="hnlist">${rows}</div>
+           <div class="actions"><button type="button" id="m-push" class="primary">Add checked to shopping list</button></div>` : ''}
+    ${rem?.length ? `<h3>Countdown</h3><ul class="ring">${rem.map(x => `<li${x.sent_at ? ' class="sent"' : ''}>${when(x.fire_at)} — ${esc(x.label || 'Start cooking')}</li>`).join('')}</ul>` : ''}
+    ${r?.instructions?.length ? `<h3>Directions</h3><ol class="rins">${r.instructions.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
+    <div class="actions">
+      <button type="button" class="danger" id="m-unplan">Un-plan</button>
+      ${r ? `<button type="button" id="m-recipe">Recipe</button>` : ''}
+    </div>`;
+  openMSheet(r?.name || m.freeform || 'Dinner', html, body => {
+    const push = body.querySelector('#m-push');
+    if (push) push.onclick = async () => {
+      const need = [...body.querySelectorAll('[data-need]:checked')].map(cb => {
+        const i = scaled[+cb.dataset.need];
+        const ing = r.recipe_ingredients.find(x => x.name === i.name);
+        const cat = state.shopCatalog.find(c => c.name.toLowerCase() === i.name.toLowerCase());
+        return { name: i.name, qty: i.qty, unit: i.unit, note: i.note, category: cat?.category,
+                 pickYourself: ing?.pick_yourself, onlineOk: ing?.online_ok };
+      });
+      await MEAL.pushToList(id, need); closeMSheet(); render();
+    };
+    body.querySelectorAll('[data-staple]').forEach(b => b.onclick = async () => {
+      const on = !b.classList.contains('on'); b.classList.toggle('on', on);
+      await MEAL.setStaple(b.dataset.staple, on);
+      const cb = b.closest('.hn').querySelector('input'); if (on) cb.checked = false;
+    });
+    body.querySelector('#m-unplan').onclick = () => { if (confirm('Un-plan this dinner? Un-bought items come off the list too.')) { MEAL.unplan(id); closeMSheet(); } };
+    const rb = body.querySelector('#m-recipe'); if (rb) rb.onclick = () => openRecipeSheet(r.id);
+  });
+}
+
+/* ?import=<url> — the iOS share-sheet path. A one-action Shortcut ("Open
+   URL: https://…/index.html?import=[Shortcut Input]") shows up in every
+   share sheet, which is the same feeling as a native share target on a
+   platform that does not offer one. */
+function checkImportParam(){
+  const u = new URL(location.href);
+  const imp = u.searchParams.get('import');
+  if (!imp) return;
+  history.replaceState(null, '', location.pathname);      // don't re-import on reload
+  state.module = 'meals';
+  $$('#tabbar button').forEach(x => x.setAttribute('aria-current', String(x.dataset.mod === 'meals')));
+  MEAL.load().then(() => { render(); startImport(imp); });
+}
+
 function renderPlaceholder(){
   const copy = {
     shopping:['Shopping list','A shared, checkable list. Add by typing or by texting the family number. Auto-generated from the week\'s meal plan once Meals is built.'],
@@ -1204,6 +1706,7 @@ $$('#tabbar button').forEach(b => b.onclick = async () => {
   state.module = b.dataset.mod;
   if (state.module === 'shopping') await SHOP.load();
   if (state.module === 'todos')    await TODO.load();
+  if (state.module === 'meals')    { await SHOP.load(); await MEAL.load(); }
   if (state.module === 'calendar') await EV.loadDone();
   $$('#tabbar button').forEach(x => x.setAttribute('aria-current', String(x === b)));
   render();
@@ -1720,6 +2223,9 @@ document.addEventListener('visibilitychange', () => {
   }
   if (document.visibilityState === 'visible' && state.module === 'todos' && !state.demo) {
     TODO.load().then(render);
+  }
+  if (document.visibilityState === 'visible' && state.module === 'meals' && !state.demo) {
+    MEAL.load().then(render);
   }
   if (!document.hidden) checkRollover();
 });

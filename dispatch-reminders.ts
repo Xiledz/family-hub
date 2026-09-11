@@ -12,7 +12,7 @@
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-const BUILD = '2026-09-10c-deliver';
+const BUILD = '2026-09-10d-meals';
 
 const admin = () => createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -255,7 +255,7 @@ Deno.serve(async (req) => {
 
   const { data: due, error } = await db
     .from('reminders')
-    .select('*, events(*), todos(*), members(*)')
+    .select('*, events(*), todos(*), meal_plan(*, recipes(name)), members(*)')
     .is('sent_at', null)
     .lte('fire_at', nowIso)
     .gte('fire_at', new Date(now.getTime() - GRACE_MIN * 60_000).toISOString())
@@ -267,29 +267,40 @@ Deno.serve(async (req) => {
   const results: any[] = [];
 
   for (const r of due ?? []) {
-    const subject = r.event_id ? r.events : r.todos;
+    /* Three subjects, one delivery path. The dispatcher phrases by which. */
+    const kind    = r.event_id ? 'event' : r.todo_id ? 'todo' : 'meal';
+    const subject = kind === 'event' ? r.events : kind === 'todo' ? r.todos : r.meal_plan;
 
     if (!subject || subject.deleted_at) {
-      await mark(db, r.id, now, null, r.event_id ? 'event deleted' : 'todo deleted');
+      await mark(db, r.id, now, null, `${kind} deleted`);
       continue;
     }
-    if (!r.event_id && subject.completed_at) {
-      await mark(db, r.id, now, null, 'already done');
-      continue;
+    if (kind === 'todo' && subject.completed_at) { await mark(db, r.id, now, null, 'already done'); continue; }
+    if (kind === 'meal' && subject.done_at)      { await mark(db, r.id, now, null, 'meal done');    continue; }
+    /* A ticked-off occurrence of a series must not ping. */
+    if (kind === 'event' && r.occurrence_date) {
+      const { data: done } = await db.from('event_done').select('event_id')
+        .eq('event_id', r.event_id).eq('occurrence_date', r.occurrence_date).maybeSingle();
+      if (done) { await mark(db, r.id, now, null, 'occurrence done'); continue; }
     }
 
     const tz    = r.members?.timezone || 'America/Chicago';
-    const title = subject.title;
-    const body  = r.event_id
-      ? phrase(r.lead_minutes, subject, tz)
-      : duePhrase(subject, tz);
+    let title: string, body: string;
+    if (kind === 'event')      { title = subject.title; body = phrase(r.lead_minutes, subject, tz); }
+    else if (kind === 'todo')  { title = subject.title; body = duePhrase(subject, tz); }
+    else {
+      /* "Take the beef out to thaw — tacos, on the table by 5:55" */
+      const dish = subject.recipes?.name || subject.freeform || 'Dinner';
+      title = r.label || 'Start cooking';
+      body  = `${dish}${subject.ready_by ? ` — on the table by ${clock12(subject.ready_by)}` : ''}`;
+    }
 
     const res = await deliver(db, ENV, r.members, {
       householdId: r.household_id,
       title, body,
       kind: 'reminder',
-      refId: r.event_id ?? r.todo_id,
-      tag:  r.event_id ? `ev-${r.event_id}` : `td-${r.todo_id}`,
+      refId: r.event_id ?? r.todo_id ?? r.meal_id,
+      tag:  kind === 'event' ? `ev-${r.event_id}` : kind === 'todo' ? `td-${r.todo_id}` : `ml-${r.meal_id}-${r.label}`,
       url:  './index.html'
     });
 
@@ -319,6 +330,9 @@ function phrase(lead: number, ev: any, tz = 'America/Chicago') {
   const d = Math.round(lead / 1440);
   return `${d === 1 ? 'Tomorrow' : `In ${d} days`} — ${when}`;
 }
+
+const clock12 = (t: string) => { const [h, m] = String(t).split(':').map(Number);
+  return `${h % 12 || 12}${m ? ':' + String(m).padStart(2,'0') : ''}${h < 12 ? 'am' : 'pm'}`; };
 
 /* A todo has no start time, only a day it is wanted by. */
 function duePhrase(td: any, _tz: string) {

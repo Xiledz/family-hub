@@ -1684,3 +1684,123 @@ function tidyTodoTitle(t) {
 export function looksLikeTodo(text) {
   return TODO_VERB_RE.test(String(text).trim());
 }
+
+/* ===========================================================================
+ * 14. INGREDIENTS
+ *
+ * A recipe line is a quantity, a unit, and a thing — "2 cups shredded sharp
+ * cheddar" — written by someone who was not thinking about a database.
+ * Fractions come as ½ and as 1/2 and as "1 1/2". Ranges say "1-2". A can
+ * size hides inside parentheses: "2 (14 oz) cans" is two cans, not fourteen
+ * of anything. This turns each of those into numbers the shopping list can
+ * scale, while keeping the ORIGINAL string, because "shredded sharp cheddar"
+ * is what the cook needs to read and "shredded cheese" is what the list
+ * needs to buy. Losing the first is how someone can no longer follow their
+ * own recipe.
+ * ========================================================================= */
+
+const VULGAR = { '½':0.5,'⅓':1/3,'⅔':2/3,'¼':0.25,'¾':0.75,'⅛':0.125,'⅜':0.375,'⅝':0.625,'⅞':0.875 };
+
+const UNIT_WORDS = [
+  'cups','cup','c','tablespoons','tablespoon','tbsp','tbs','tb','teaspoons','teaspoon','tsp',
+  'ounces','ounce','oz','fl oz','pounds','pound','lbs','lb','grams','gram','g','kilograms','kilogram','kg',
+  'milliliters','milliliter','ml','liters','liter','litres','litre','l',
+  'pints','pint','pt','quarts','quart','qt','gallons','gallon','gal',
+  'cans','can','packages','package','pkg','packets','packet','jars','jar','bottles','bottle',
+  'boxes','box','bags','bag','bunches','bunch','heads','head','cloves','clove','sticks','stick',
+  'slices','slice','pieces','piece','sprigs','sprig','stalks','stalk','ears','ear','loaves','loaf',
+  'pinch','pinches','dash','dashes','handful','handfuls','splash','sprinkle','drizzle',
+];
+const UNIT_RE = new RegExp('^(' + UNIT_WORDS.map(u => u.replace(/ /g,'\\s+')).join('|') + ')\\.?\\b\\s*', 'i');
+
+/* "1 1/2", "1½", "½", "1.5", "2", "1-2", "1 to 2" → a number, or null. */
+function readQty(s) {
+  const t = String(s).trim();
+  /* Each helper keeps its own match. Sharing one `m` between the range test
+     and the per-side reader meant reading the left side overwrote the match
+     the right side still needed. */
+  const one = x => {
+    x = x.trim(); let k;
+    if (VULGAR[x] != null) return VULGAR[x];
+    if ((k = x.match(/^(\d+)\s*([½⅓⅔¼¾⅛⅜⅝⅞])$/))) return +k[1] + VULGAR[k[2]];
+    if ((k = x.match(/^(\d+)\s+(\d+)\/(\d+)$/)))  return +k[1] + (+k[2] / +k[3]);
+    if ((k = x.match(/^(\d+)\/(\d+)$/)))          return +k[1] / +k[2];
+    if ((k = x.match(/^\d+(?:\.\d+)?$/)))          return parseFloat(x);
+    return null;
+  };
+  /* A range: shop for the larger. "1-2 onions" means you might need two. */
+  const r = t.match(/^(.+?)\s*(?:-|–|\bto\b)\s*(.+)$/);
+  if (r) {
+    const a = one(r[1]), b = one(r[2]);
+    if (a != null && b != null) return Math.max(a, b);
+  }
+  return one(t);
+}
+
+const QTY_HEAD = /^((?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[½⅓⅔¼¾⅛⅜⅝⅞]?|[½⅓⅔¼¾⅛⅜⅝⅞])(?:\s*(?:-|–|to)\s*(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[½⅓⅔¼¾⅛⅜⅝⅞]?|[½⅓⅔¼¾⅛⅜⅝⅞]))?)\s*/;
+
+/* opts: { catalog }  — same catalog the shopping parser trusts. */
+export function parseIngredient(line, opts = {}) {
+  const original = String(line || '').replace(/\s+/g, ' ').trim();
+  const out = { original, name: '', qty: null, unit: null, note: null, optional: false, category: 'other' };
+  if (!original) return out;
+
+  let t = original
+    .replace(/^[-•*·•]\s*/, '')                 // bullet
+    .replace(/^\d+[.)]\s+(?=\D)/, '');                // "1. " step numbering, not a qty
+  const notes = [];
+
+  /* (optional) anywhere. */
+  if (/\boptional\b/i.test(t)) { out.optional = true; t = t.replace(/[,(]?\s*optional\)?/i, ' '); }
+
+  /* Quantity at the front. "a pinch", "an onion", "a can of" — an article
+     is a quantity of one, and it is how recipes are actually written. */
+  let m = t.match(QTY_HEAD);
+  if (m) { out.qty = readQty(m[1]); t = t.slice(m[0].length); }
+  else if ((m = t.match(/^an?\s+(?=\S)/i))) { out.qty = 1; t = t.slice(m[0].length); }
+
+  /* "(14 oz)" right after the quantity is a SIZE, not a count. Keep it as a
+     note so the cook still sees it, but never multiply it. */
+  if ((m = t.match(/^\(([^)]*)\)\s*/))) { notes.push(m[1]); t = t.slice(m[0].length); }
+
+  /* Unit. */
+  if ((m = t.match(UNIT_RE))) { out.unit = m[1].toLowerCase().replace(/\s+/g,' '); t = t.slice(m[0].length); }
+  t = t.replace(/^of\s+/i, '');
+
+  /* Trailing prep notes: ", chopped" / ", divided" / "(about 2 cups)". */
+  if ((m = t.match(/\(([^)]*)\)/))) { notes.push(m[1]); t = t.replace(m[0], ' '); }
+  if ((m = t.match(/,\s*(.+)$/)))    { notes.push(m[1]); t = t.slice(0, m.index); }
+  t = t.replace(/\s+/g, ' ').trim();
+
+  if (notes.length) out.note = notes.join('; ');
+
+  /* The thing itself goes through the same normalization the shopping list
+     uses, so a recipe's "shredded sharp cheddar" and a text saying "cheese"
+     land on the same catalog row. */
+  const shop = parseShopping(t, { catalog: opts.catalog || [], stores: [] });
+  if (shop.items.length === 1) {
+    /* One thing, as expected: take the normalized, brand-repaired name. */
+    const it = shop.items[0];
+    out.name = it.name; out.category = it.category;
+    out.pickYourself = !!it.pickYourself; out.onlineOk = !!it.onlineOk;
+  } else {
+    /* The list parser split it — "diced tomatoes" into "diced" + "tomatoes".
+       An ingredient line is ONE item by definition, so keep the phrase whole
+       and borrow the most specific category any piece produced. */
+    out.name = t.toLowerCase().replace(/[.,;:]+$/, '');
+    const best = shop.items.find(i => i.category !== 'other');
+    if (best) {
+      out.category = best.category;
+      out.pickYourself = !!best.pickYourself; out.onlineOk = !!best.onlineOk;
+    }
+  }
+  return out;
+}
+
+/* Split a pasted block into ingredient lines. Headings like "For the sauce:"
+   are dropped; blank lines are dropped; everything else is an ingredient. */
+export function splitIngredientBlock(text) {
+  return String(text || '').split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l && !/^(?:for the\b|.*:\s*$)/i.test(l) && !/^ingredients\b/i.test(l));
+}

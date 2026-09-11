@@ -20,7 +20,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
 
-const BUILD = '2026-09-10c-deliver';
+const BUILD = '2026-09-10d-meals';
 
 const db = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -61,6 +61,9 @@ function localParts(tz: string, at = new Date()) {
   return { date: `${g('year')}-${g('month')}-${g('day')}`,
            h: +g('hour'), m: +g('minute'), weekday: g('weekday') };
 }
+
+const clock12 = (t: string) => { const [h, m] = String(t).split(':').map(Number);
+  return `${h % 12 || 12}${m ? ':' + String(m).padStart(2,'0') : ''}${h < 12 ? 'am' : 'pm'}`; };
 
 function clock(iso: string, tz: string) {
   const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' })
@@ -319,16 +322,45 @@ Deno.serve(async (req) => {
     const { data: events, error } = await db.rpc('member_day', { p_member: m.id, p_date: now.date });
     if (error) { out.push({ member: m.name, status: 'query failed', error: error.message }); continue; }
 
+    /* Tonight's dinner and its first step, for the cook — the heads-up for
+       someone who will not have their phone in hand at 4:25. */
+    const { data: meal } = await db.from('meal_plan')
+      .select('id, ready_by, freeform, cook_id, recipes(name)')
+      .eq('household_id', house!.id).eq('plan_date', now.date).eq('slot', 'dinner')
+      .is('deleted_at', null).is('done_at', null).maybeSingle();
+    let dinnerLine = '';
+    if (meal) {
+      const dish = (meal as any).recipes?.name || meal.freeform || 'Dinner';
+      let first = '';
+      if (meal.cook_id === m.id) {
+        const { data: st } = await db.from('reminders').select('label, fire_at')
+          .eq('meal_id', meal.id).is('sent_at', null).order('fire_at').limit(1).maybeSingle();
+        if (st?.label) first = ` — ${st.label.toLowerCase()} at ${clock(st.fire_at, tz)}`;
+      }
+      dinnerLine = `Dinner: ${dish}${meal.ready_by ? ` by ${clock12(meal.ready_by)}` : ''}${first}`;
+    }
+
+    /* Due today and overdue, from the list. The digest IS the nag. */
+    const { data: todos } = await db.rpc('member_todos', { p_member: m.id });
+    const dueToday = (todos ?? []).filter((t: any) => t.due_on === now.date);
+    const overdue  = (todos ?? []).filter((t: any) => t.overdue_days > 0);
+    const todoLines: string[] = [];
+    for (const t of dueToday) todoLines.push(`Due today: ${t.title}`);
+    for (const t of overdue)  todoLines.push(`Overdue ${t.overdue_days}d: ${t.title}`);
+
+    const extras = [dinnerLine, ...todoLines].filter(Boolean);
+
     // A forced test should always produce a message, even on an empty day.
-    if (!events?.length && !SEND_WHEN_EMPTY && !opts.force) {
+    if (!events?.length && !extras.length && !SEND_WHEN_EMPTY && !opts.force) {
       await db.from('digest_log').upsert({ member_id: m.id, for_date: now.date });
       out.push({ member: m.name, status: 'nothing today' });
       continue;
     }
 
-    const text = events?.length
+    let text = events?.length
       ? compose(m.name, now.weekday, dateLabel, events, tz)
       : `Good morning, ${m.name}. Nothing on your calendar today.`;
+    if (extras.length) text += '\n\n' + extras.join('\n');
 
     if (opts.dry) { out.push({ member: m.name, status: 'dry run', would_send: text }); continue; }
 
