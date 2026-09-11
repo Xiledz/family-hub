@@ -142,5 +142,37 @@ eq('a real event',            intent('Soccer Thursday 5:30'), 'event');
    all-day event on that person's calendar, which was almost never meant. */
 eq('name alone asks', intent('Bryce garage'), 'ask');
 
+// --- name + chore verb -----------------------------------------------------
+/* THE chore. It was a weekly calendar event on Bryce's Tuesdays. */
+eq('name + chore + repeat is a todo', intent('Bryce take out the trash every Tuesday'), 'todo');
+eq('...owned by Bryce',   T('Bryce take out the trash every Tuesday').assignees, ['Bryce']);
+eq('...weekly on Tuesday', T('Bryce take out the trash every Tuesday').repeat.days, [2]);
+eq('...due next Tuesday', T('Bryce take out the trash every Tuesday').due_on, '2026-09-15');
+eq('...clean title',      T('Bryce take out the trash every Tuesday').title, 'Take out the trash');
+eq('name + chore, no when', intent('Addie clean your room'), 'todo');
+eq('two names, tonight',  intent('Bryce and Addie unload the dishwasher tonight'), 'todo');
+eq('...both owe it',      T('Bryce and Addie unload the dishwasher tonight').assignees, ['Bryce','Addie']);
+eq('...tonight is today', T('Bryce and Addie unload the dishwasher tonight').due_on, '2026-09-10');
+eq('...with no clock',    T('Bryce and Addie unload the dishwasher tonight').due_time, null);
+/* Chore verb + clock: still a chore, hour kept. A bare 7 leans evening. */
+eq('name + chore + clock', intent('Bryce take out the trash at 7'), 'todo');
+eq('...keeps 7pm',        T('Bryce take out the trash at 7').due_time, '19:00');
+eq('...due today',        T('Bryce take out the trash at 7').due_on, '2026-09-10');
+/* A repeat with no day starts today, or it would never nag and never advance. */
+eq('daily starts today',  T('Bryce feed the dog every day').due_on, '2026-09-10');
+eq('...and repeats',      T('Bryce feed the dog every day').repeat.freq, 'daily');
+/* Must not regress. */
+eq('name + calendar noun + clock', intent('Bryce soccer practice Tuesday at 5'), 'event');
+eq('name + appointment',  intent('Bryce dentist Tuesday 3pm'), 'event');
+eq('practice is not a chore verb', looksLikeTodo('practice piano', ROSTER), false);
+eq('...even after a name', looksLikeTodo('Bryce practice piano', ROSTER), false);
+eq('needs X is not needs to', intent('Bryce needs cleats'), 'ask');
+/* Compounds that START with a chore verb are calendar nouns. */
+eq('book club is an event',  intent('Jess book club Tuesday 7pm'), 'event');
+eq('book the dentist is a chore', intent('book the dentist'), 'todo');
+eq('study group is an event', intent('Addie study group Thursday 4pm'), 'event');
+eq('study for the test is a chore', intent('Addie study for the test'), 'todo');
+eq('check up is an event',   intent('Bryce check up Tuesday 3pm'), 'event');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

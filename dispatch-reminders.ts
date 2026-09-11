@@ -12,7 +12,7 @@
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-const BUILD = '2026-09-10d-meals';
+const BUILD = '2026-09-11a-m0';
 
 const admin = () => createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -307,6 +307,21 @@ Deno.serve(async (req) => {
     /* channel records what was USED. Null stays null when nothing worked. */
     await mark(db, r.id, now, res.channel, res.ok ? null : res.detail);
     res.ok ? sent++ : failed++;
+
+    /* The nag asked for "DID". Write down who was actually asked — the
+       guardian, when the chain went through one — so their bare "did it"
+       resolves to THIS chore. sms_last_action is one row per person and
+       the newest wins, which is the right answer for a text conversation. */
+    if (res.ok && kind === 'todo' && r.members?.id) {
+      const recipient = res.detail?.startsWith('via ')
+        ? (r.members.notify_via_member_id ?? r.members.id)
+        : r.members.id;
+      await db.from('sms_last_action').upsert({
+        member_id: recipient, household_id: r.household_id,
+        todo_id: r.todo_id, event_id: null, occurrence_date: r.occurrence_date ?? null,
+        action: 'nag', created_at: nowIso
+      }, { onConflict: 'member_id' });
+    }
     results.push({ who: r.members?.name, title, channel: res.channel, ok: res.ok });
   }
 
@@ -334,12 +349,18 @@ function phrase(lead: number, ev: any, tz = 'America/Chicago') {
 const clock12 = (t: string) => { const [h, m] = String(t).split(':').map(Number);
   return `${h % 12 || 12}${m ? ':' + String(m).padStart(2,'0') : ''}${h < 12 ? 'am' : 'pm'}`; };
 
-/* A todo has no start time, only a day it is wanted by. */
-function duePhrase(td: any, _tz: string) {
-  if (!td.due_on) return 'On your list';
-  const today = new Date().toISOString().slice(0, 10);
-  if (td.due_on === today) return 'Due today';
-  return td.due_on < today ? `Overdue since ${td.due_on}` : `Due ${td.due_on}`;
+/* A todo has no start time, only a day it is wanted by. The last words are
+   the instruction: bare "done" is the shopping trip (TRIP_DONE owns it at
+   stage 0), so the nag has to say DID — and it goes last, because deliver()
+   prefixes the title and, for a guardian, "For Bryce:". The SMS reads
+   "For Bryce: Take out the trash — Due today. Reply DID when done". */
+function duePhrase(td: any, tz: string) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const when = !td.due_on ? 'On your list'
+             : td.due_on === today ? 'Due today'
+             : td.due_on < today ? `Overdue since ${td.due_on}` : `Due ${td.due_on}`;
+  return `${when}. Reply DID when done`;
 }
 
 const mark = (db: any, id: string, at: Date, channel: string | null, err: string | null) =>

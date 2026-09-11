@@ -20,7 +20,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
 
-const BUILD = '2026-09-10d-meals';
+const BUILD = '2026-09-11b-m1';
 
 const db = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -286,7 +286,8 @@ Deno.serve(async (req) => {
   let opts: any = {};
   try { opts = await req.json(); } catch { /* cron sends {} */ }
 
-  const { data: house } = await db.from('households').select('id, timezone').limit(1).single();
+  const { data: house } = await db.from('households')
+    .select('id, timezone, default_cook_id').limit(1).single();
   const tz = house?.timezone || 'America/Chicago';
   const now = localParts(tz);
 
@@ -301,18 +302,99 @@ Deno.serve(async (req) => {
   }
 
   /* Everyone, including the kids with no phone of their own. Filtering on
-     phone here is what kept Bryce and Addie out of the digest entirely; the
-     delivery chain is what knows their day should reach Jess instead. */
-  let q = db.from('members').select('id, name, phone, notify_via_member_id')
-    .eq('household_id', house!.id).is('deleted_at', null);
-  if (opts.member) q = q.ilike('name', opts.member);
-  const { data: members } = await q;
+     phone here is what kept Bryce and Addie out of the digest entirely.
+
+     ONE MESSAGE PER RECIPIENT. Bryce and Addie have no route of their own,
+     so deliver() would carry each of their digests to Jess as a separate
+     text — three messages before 7am, two of them prefixed "For Bryce:".
+     Instead, anyone with no push device and no phone is folded into their
+     guardian's message as a named block, in members.sort_order. The test
+     for "no route of their own" mirrors deliver()'s actual decision: push
+     first, then their own phone, then the guardian. */
+  const { data: members } = await db.from('members')
+    .select('id, name, phone, notify_via_member_id, sort_order')
+    .eq('household_id', house!.id).is('deleted_at', null).order('sort_order');
+  const { data: subs } = await db.from('push_subscriptions').select('member_id');
+  const hasPush = new Set((subs ?? []).map((s: any) => s.member_id));
+  const selfRouted = (m: any) => hasPush.has(m.id) || !!m.phone;
+
+  type Group = { leader: any; wards: any[] };
+  const groups: Group[] = [];
+  const groupOf = new Map<string, Group>();
+  for (const m of members ?? []) {
+    const guardian = (!selfRouted(m) && m.notify_via_member_id)
+      ? (members ?? []).find((g: any) => g.id === m.notify_via_member_id && g.id !== m.id) : null;
+    if (guardian) {
+      let g = groupOf.get(guardian.id);
+      if (!g) { g = { leader: guardian, wards: [] }; groupOf.set(guardian.id, g); groups.push(g); }
+      g.wards.push(m);
+    } else if (!groupOf.has(m.id)) {
+      const g = { leader: m, wards: [] }; groupOf.set(m.id, g); groups.push(g);
+    }
+  }
 
   const dateLabel = new Date(now.date + 'T12:00:00Z')
     .toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
+  /* Tonight's dinner, once, for everybody's message. The cook is resolved
+     exactly as materialize_meal_reminders resolves it: the meal's cook, else
+     the household default, else whoever planned it. */
+  const { data: meal } = await db.from('meal_plan')
+    .select('id, ready_by, freeform, cook_id, created_by, recipes(name)')
+    .eq('household_id', house!.id).eq('plan_date', now.date).eq('slot', 'dinner')
+    .is('deleted_at', null).is('done_at', null).maybeSingle();
+  const cookId = meal ? (meal.cook_id ?? house!.default_cook_id ?? meal.created_by ?? null) : null;
+  let cookName = '';
+  if (cookId) {
+    const { data: c } = await db.from('members').select('name').eq('id', cookId).maybeSingle();
+    cookName = c?.name ?? '';
+  }
+  const dinnerFor = async (m: any) => {
+    if (!meal) return '';
+    const dish = (meal as any).recipes?.name || meal.freeform || 'Dinner';
+    let first = '';
+    /* The cook's own line carries the first prep step — the heads-up for
+       someone who will not have their phone in hand at 4:25. */
+    if (cookId && cookId === m.id) {
+      const { data: st } = await db.from('reminders').select('label, fire_at')
+        .eq('meal_id', meal.id).is('sent_at', null).neq('label', 'Start cooking')
+        .order('fire_at').limit(1).maybeSingle();
+      if (st?.label) first = `. First: ${st.label.toLowerCase()} at ${clock(st.fire_at, tz)}`;
+    }
+    const who = cookName ? ` — ${cookName === m.name ? 'you cook' : `${cookName} cooks`}` : '';
+    const by  = meal.ready_by ? `${who ? ',' : ' —'} on the table by ${clock12(meal.ready_by)}` : '';
+    return `Dinner: ${dish}${who}${by}${first}`;
+  };
+
+  /* Due today and overdue, from the list. The digest IS the nag. */
+  const todoLinesFor = async (m: any) => {
+    const { data: todos } = await db.rpc('member_todos', { p_member: m.id });
+    const lines: string[] = [];
+    for (const t of (todos ?? []).filter((t: any) => t.due_on === now.date)) lines.push(`Due today: ${t.title}`);
+    for (const t of (todos ?? []).filter((t: any) => t.overdue_days > 0))   lines.push(`Overdue ${t.overdue_days}d: ${t.title}`);
+    return lines;
+  };
+
+  /* A ward's block: their events as plain lines (no "you drive" — the reader
+     is the guardian), their chores, capped so three kids cannot push the
+     guardian's own day off the screen. */
+  const WARD_MAX = 4;
+  const wardBlock = async (w: any) => {
+    const { data: events } = await db.rpc('member_day', { p_member: w.id, p_date: now.date });
+    const lines = (events ?? []).map((ev: any) => {
+      const when = ev.all_day ? 'All day' : clock(ev.starts_at, tz) + (ev.ends_at ? `–${clock(ev.ends_at, tz)}` : '');
+      return `${when}  ${ev.title}`;
+    }).concat(await todoLinesFor(w));
+    if (!lines.length) return null;
+    const shown = lines.slice(0, WARD_MAX);
+    if (lines.length > WARD_MAX) shown.push(`+${lines.length - WARD_MAX} more`);
+    return `${w.name}:\n${shown.join('\n')}`;
+  };
+
   const out: any[] = [];
-  for (const m of members ?? []) {
+  for (const g of groups) {
+    const m = g.leader;
+    if (opts.member && String(m.name).toLowerCase() !== String(opts.member).toLowerCase()) continue;
     if (!opts.force) {
       const { data: done } = await db.from('digest_log').select('member_id')
         .eq('member_id', m.id).eq('for_date', now.date).maybeSingle();
@@ -322,38 +404,16 @@ Deno.serve(async (req) => {
     const { data: events, error } = await db.rpc('member_day', { p_member: m.id, p_date: now.date });
     if (error) { out.push({ member: m.name, status: 'query failed', error: error.message }); continue; }
 
-    /* Tonight's dinner and its first step, for the cook — the heads-up for
-       someone who will not have their phone in hand at 4:25. */
-    const { data: meal } = await db.from('meal_plan')
-      .select('id, ready_by, freeform, cook_id, recipes(name)')
-      .eq('household_id', house!.id).eq('plan_date', now.date).eq('slot', 'dinner')
-      .is('deleted_at', null).is('done_at', null).maybeSingle();
-    let dinnerLine = '';
-    if (meal) {
-      const dish = (meal as any).recipes?.name || meal.freeform || 'Dinner';
-      let first = '';
-      if (meal.cook_id === m.id) {
-        const { data: st } = await db.from('reminders').select('label, fire_at')
-          .eq('meal_id', meal.id).is('sent_at', null).order('fire_at').limit(1).maybeSingle();
-        if (st?.label) first = ` — ${st.label.toLowerCase()} at ${clock(st.fire_at, tz)}`;
-      }
-      dinnerLine = `Dinner: ${dish}${meal.ready_by ? ` by ${clock12(meal.ready_by)}` : ''}${first}`;
-    }
+    const extras = [await dinnerFor(m), ...(await todoLinesFor(m))].filter(Boolean);
+    const blocks: string[] = [];
+    for (const w of g.wards) { const b = await wardBlock(w); if (b) blocks.push(b); }
 
-    /* Due today and overdue, from the list. The digest IS the nag. */
-    const { data: todos } = await db.rpc('member_todos', { p_member: m.id });
-    const dueToday = (todos ?? []).filter((t: any) => t.due_on === now.date);
-    const overdue  = (todos ?? []).filter((t: any) => t.overdue_days > 0);
-    const todoLines: string[] = [];
-    for (const t of dueToday) todoLines.push(`Due today: ${t.title}`);
-    for (const t of overdue)  todoLines.push(`Overdue ${t.overdue_days}d: ${t.title}`);
-
-    const extras = [dinnerLine, ...todoLines].filter(Boolean);
+    const covered = [m, ...g.wards].map((x: any) => ({ member_id: x.id, for_date: now.date }));
 
     // A forced test should always produce a message, even on an empty day.
-    if (!events?.length && !extras.length && !SEND_WHEN_EMPTY && !opts.force) {
-      await db.from('digest_log').upsert({ member_id: m.id, for_date: now.date });
-      out.push({ member: m.name, status: 'nothing today' });
+    if (!events?.length && !extras.length && !blocks.length && !SEND_WHEN_EMPTY && !opts.force) {
+      await db.from('digest_log').upsert(covered);
+      out.push({ member: m.name, wards: g.wards.map((w: any) => w.name), status: 'nothing today' });
       continue;
     }
 
@@ -361,8 +421,13 @@ Deno.serve(async (req) => {
       ? compose(m.name, now.weekday, dateLabel, events, tz)
       : `Good morning, ${m.name}. Nothing on your calendar today.`;
     if (extras.length) text += '\n\n' + extras.join('\n');
+    if (blocks.length) text += '\n\n' + blocks.join('\n\n');
+    /* One SMS segment is 160 chars; a digest is several. Past ~1000 it is a
+       wall nobody reads, so it is cut — the app has the rest. */
+    const MAX = 1000;
+    if (text.length > MAX) text = text.slice(0, MAX - 1).replace(/\s+\S*$/, '') + '…';
 
-    if (opts.dry) { out.push({ member: m.name, status: 'dry run', would_send: text }); continue; }
+    if (opts.dry) { out.push({ member: m.name, wards: g.wards.map((w: any) => w.name), status: 'dry run', would_send: text }); continue; }
 
     const res = await deliver(db, ENV, m, {
       householdId: house!.id,
@@ -374,11 +439,14 @@ Deno.serve(async (req) => {
       url:   './index.html'
     });
 
-    /* Log the day either way. A digest that could not be delivered should not
-       be retried fifteen minutes later into the same dead end — and it is
-       recorded in `deliveries`, so the failure is visible rather than silent. */
-    await db.from('digest_log').upsert({ member_id: m.id, for_date: now.date });
-    out.push({ member: m.name, status: res.ok ? 'sent' : 'no route',
+    /* Log the day either way, for the leader AND every ward folded in, so a
+       second wake-up in the window sends nothing. A digest that could not
+       be delivered should not be retried fifteen minutes later into the same
+       dead end — and it is recorded in `deliveries`, so the failure is
+       visible rather than silent. */
+    await db.from('digest_log').upsert(covered);
+    out.push({ member: m.name, wards: g.wards.map((w: any) => w.name),
+               status: res.ok ? 'sent' : 'no route',
                via: res.channel, detail: res.detail, events: events?.length ?? 0 });
   }
   console.log('morning-digest build=' + BUILD + ' ' + JSON.stringify(out));

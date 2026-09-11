@@ -203,6 +203,14 @@ try{var t=localStorage.getItem('fh.theme');if(t&&t!=='auto')document.documentEle
       <div class="hintline">Every new event you add starts with this. You can still change it per event.</div>
     </div>
 
+    <div class="f" id="set-feed-row" hidden>
+      <label>Share the calendar</label>
+      <div class="hintline">Grandparents or a sitter can see the family calendar in their own phone's Calendar app — read-only, always current.</div>
+      <input id="set-feed" readonly style="font-size:12px;margin-top:6px">
+      <button class="plain" type="button" id="set-feed-copy" style="margin-top:6px">Copy the link</button>
+      <div class="hintline">Subscribe on iPhone: Settings → Calendar → Accounts → Add Account → Other → <b>Add Subscribed Calendar</b>, paste the link.</div>
+    </div>
+
     <button class="plain" type="button" id="set-switch">Switch to a different person</button>
     <button class="save" type="button" id="set-done">Done</button>
   </div>

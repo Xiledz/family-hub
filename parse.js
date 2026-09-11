@@ -1352,8 +1352,77 @@ export const ROUTE_RE = {
   TODO_TELL  : /^(?:tell|ask|have|get|remind)\s+(.+?)\s+to\s+(.+)$/i,
   TODO_SELF  : /^(?:remind\s+me\s+to|i\s+(?:need|have)\s+to|i\s+should|i\s+gotta)\s+(.+)$/i,
   TODO_HOUSE : /^(?:we\s+(?:need|have)\s+to|someone|somebody|anyone)\s+(?:needs?\s+to\s+)?(.+)$/i,
-  TODO_TAG   : /^(?:to-?\s?do|task|chore)s?\s*:\s*(.+)$/i
+  TODO_TAG   : /^(?:to-?\s?do|task|chore)s?\s*:\s*(.+)$/i,
+
+  /* --- QUESTIONS -------------------------------------------------------
+     A question is answered, never filed. "anything Thursday?" used to
+     become an event titled "anything". These run at stage 0, before any
+     matcher that can write a row, and they need no pending question: they
+     answer or they say what they can answer. */
+  ASK_DINNER : /^(?:what'?s|whats|what\s+is|what\s+are\s+we\s+having)?\s*(?:for\s+)?dinner(?:\s+(.+?))?\s*\??$/i,
+  ASK_GOT    : /^(?:did|has|have)\s+(\w+)\s+(?:get|got|gotten|buy|bought|pick(?:ed)?\s+up|grab(?:bed)?)\s+(?:the\s+|any\s+|some\s+)?(.+?)\s*\??$/i,
+  ASK_HAVE   : /^(?:do|did)\s+we\s+(?:have|get|still\s+have|need)\s+(?:the\s+|any\s+|some\s+)?(.+?)\s*\??$/i,
+  ASK_DRIVER : /^who(?:'?s|\s+is|\s+has|\s+have)?\s+(?:driving|taking|picking\s+up|getting|bringing|dropping\s+off|got|has|have)\s+(.+?)\s*\??$/i,
+  ASK_DAY    : /^(?:what'?s\s+(?:on\s+)?the\s+(?:plan|schedule)|(?:what'?s|what\s+is)\s+(?:on|happening|going\s+on|up)|what\s+do\s+(?:we|i)\s+have|what\s+have\s+(?:we|i)\s+got|what'?s|what\s+is|is\s+there\s+anything|anything|schedule|plans?)\s*(?:on\s+|for\s+)?(.*?)\s*\??$/i
 };
+
+/* A fragment that is nothing but a day: "thursday", "tomorrow", "" (today).
+   Returns the date, or null when the fragment carries a title or a clock. */
+function bareDate(fragment, opts) {
+  const f = String(fragment || '').trim();
+  const now = opts.now || new Date();
+  if (!f || /^(?:today|tonight|now)$/i.test(f)) return ymd(now);
+  const q = parseQuickAdd(f, { members: [], now });
+  if (!q.matched.includes('date')) return null;
+  if (q.matched.includes('time'))  return null;
+  if (q.title && q.title !== 'Untitled') return null;
+  return q.date;
+}
+
+/* opts: { members, now }. Returns an ask_* intent or null. */
+export function askIntent(body, opts = {}) {
+  const text = String(body || '').trim();
+  const members = opts.members || [];
+  let m;
+
+  if ((m = text.match(ROUTE_RE.ASK_DINNER))) {
+    const date = bareDate(m[1], opts);
+    /* "dinner is leftovers" has a tail that is not a day — not a question. */
+    if (date) return { intent: 'ask_dinner', date };
+  }
+
+  if ((m = text.match(ROUTE_RE.ASK_GOT))) {
+    const who = whoIn(m[1], members);
+    return { intent: 'ask_got', item: m[2].trim(), who: who[0] || null };
+  }
+  if ((m = text.match(ROUTE_RE.ASK_HAVE))) {
+    return { intent: 'ask_got', item: m[1].trim(), who: null };
+  }
+
+  if ((m = text.match(ROUTE_RE.ASK_DRIVER))) {
+    const who = whoIn(m[1], members);
+    let rest = m[1];
+    for (const n of who) rest = rest.replace(new RegExp(`\\b${n}\\b`, 'ig'), ' ');
+    rest = rest.replace(/\s+/g, ' ').trim();
+    /* "who's driving Addie to practice Thursday" — the place is not a day,
+       but the question is still about Thursday, so any date in the tail
+       counts. No date means today. */
+    const q = rest ? parseQuickAdd(rest, { members: [], now: opts.now || new Date() }) : null;
+    const date = q && q.matched.includes('date') ? q.date : ymd(opts.now || new Date());
+    return { intent: 'ask_driver', who: who[0] || null, date };
+  }
+
+  if ((m = text.match(ROUTE_RE.ASK_DAY))) {
+    const who = whoIn(m[1], members);
+    let rest = m[1];
+    for (const n of who) rest = rest.replace(new RegExp(`\\b${n}(?:'s)?\\b`, 'ig'), ' ');
+    rest = rest.replace(/\s+/g, ' ').trim();
+    const date = bareDate(rest, opts);
+    if (date) return { intent: 'ask_day', date, who: who[0] || null };
+  }
+
+  return null;
+}
 
 /* Does this text name a store? Returns the store row or null. */
 function routeStoreIn(stores, text) {
@@ -1408,6 +1477,21 @@ export function routeIntent(body, opts = {}, from = 0) {
       const who = whoIn(ls[1], opts.members || []);
       if (who.length) return { intent: 'todo_show', who: who[0] };
     }
+    /* A pasted block. A schedule (≥3 lines, ≥2 dated) becomes many rows
+       behind one confirm; a pasted list with no dates at all and mostly
+       groceries goes to the shopping list in one go, through the same
+       multi-item path a comma list takes. Both before the questions and
+       the tails, after the list commands, so "list" alone never gets here. */
+    if (splitSeasonLines(text).length >= 3) {
+      if (looksLikeSeason(text, opts)) return { intent: 'season', season: parseSeason(text, opts) };
+      const probe = parseShopping(text, { stores, catalog: opts.catalog || [] });
+      const known = probe.items.filter(i => i.category !== 'other').length;
+      if (probe.items.length >= 3 && known * 2 >= probe.items.length) return { intent: 'shop' };
+    }
+    /* Questions. Before anything that can write a row: "anything
+       Thursday?" was becoming an event titled "anything". */
+    const ask = askIntent(text, opts);
+    if (ask) return ask;
   }
 
   /* 1 — a correction to whatever just happened. Runs before the edit matcher
@@ -1465,13 +1549,35 @@ function routeTail(text, opts = {}) {
   });
   const hasWhen = p.matched.includes('date') || p.matched.includes('time') || !!p.repeat;
 
+  /* A question mark that got this far is not a request to file anything.
+     "Dentist Thursday?" is genuinely ambiguous — asking about Thursday, or
+     adding the dentist? Ask rather than guess: answer the day, and offer
+     the add as a numbered reply. Anything else ending in "?" gets told what
+     can be answered. Neither writes a row. */
   if (ROUTE_RE.SHOP_STRONG.test(text)) return { intent: 'shop' };
+
+  if (/\?\s*$/.test(text)) {
+    const body = text.replace(/\?\s*$/, '').trim();
+    const questiony = /^(?:what|who|when|where|why|how|is|are|do|does|did|can|could|any|anything)\b/i.test(p.title || '');
+    if (p.matched.includes('date') && !p.repeat) {
+      /* "is there soccer Saturday?" names a day and asks: answer the day.
+         "Dentist Thursday?" names a day and a thing: answer the day AND
+         offer to add the thing, as a numbered reply. */
+      if (p.title && p.title !== 'Untitled' && !questiony) {
+        return { intent: 'ask_day', date: p.date, who: null, offer: body, offerTitle: p.title };
+      }
+      return { intent: 'ask_day', date: p.date, who: null };
+    }
+    return { intent: 'ask_help' };
+  }
 
   /* An imperative chore verb wins even against a clock. "Take out trash every
      Tuesday morning at 7" is a chore that has a preferred hour, not an
      appointment — and todos carry a due_time now, so the 7 is kept rather
-     than dropped. This is checked BEFORE the clock rule below. */
-  if (looksLikeTodo(text)) return { intent: 'todo' };
+     than dropped. This is checked BEFORE the clock rule below. Names in
+     front are looked past: "Bryce take out the trash every Tuesday" is the
+     same chore with an owner, not a weekly event. */
+  if (looksLikeTodo(text, opts.members)) return { intent: 'todo' };
 
   /* Everything else with a clock is an appointment, whatever frame wraps it.
      "I need to leave for the airport Friday 6am" reads like a todo — "need
@@ -1538,6 +1644,14 @@ const TODO_VERB_RE = new RegExp(
   TODO_VERBS.map(v => v.replace(/ /g, '\\s+')).join('|') +
   ')\\b\\s+\\S', 'i');
 
+/* Calendar nouns that happen to START with a chore verb. "Book club Tuesday
+   7pm" opens with "book", "study group" with "study", "check up" with
+   "check" — and each is an appointment, never a chore. Same rule that took
+   "practice" out of the verb list, applied to the compounds this family
+   actually says, so the verbs themselves can stay useful ("book the dentist",
+   "study for the test", "water the plants"). */
+const CAL_NOUN_RE = /^(?:please\s+|can\s+you\s+)?(?:book\s+club|study\s+(?:group|hall|session)|check[\s-]?up|water\s+polo|paint\s+night|(?:walk|read)[\s-]?a[\s-]?thon)\b/i;
+
 /* A deadline only counts when what follows is a bare date. "by Friday" is a
    due date. "by the register", "by the dozen", "by 8pm" are not — the last
    one has a time, which makes it an event with a reminder, and the schema
@@ -1559,7 +1673,7 @@ function todoStrong(text, opts) {
   /* A clock outranks a chore FRAME but not a chore VERB. "I need to leave
      for the airport Friday 6am" is an appointment however it is phrased;
      "take out the trash Tuesday at 7" is a chore with a preferred hour. */
-  if (!looksLikeTodo(t)) {
+  if (!looksLikeTodo(t, opts.members)) {
     const q = parseQuickAdd(t, { members: [], now: opts.now, me: opts.me });
     if (q.matched.includes('time')) return false;
   }
@@ -1622,7 +1736,13 @@ export function parseTodo(input, opts = {}) {
        chore floating in the calendar with a time attached to nothing. */
     if (!out.due_on) out.due_on = q.date;
   }
-  if (q.repeat) out.repeat = q.repeat;
+  if (q.repeat) {
+    out.repeat = q.repeat;
+    /* A repeating chore needs a first occurrence or nothing ever nags and
+       nothing ever advances. "Feed the dog every day" starts today; "every
+       Tuesday" already carries next Tuesday as its date. */
+    if (!out.due_on) out.due_on = q.date || null;
+  }
 
   out.title = tidyTodoTitle(q.title && q.title !== 'Untitled' ? q.title : body);
   if (!out.assignees.length && !out.house) out.assignees = [opts.me].filter(Boolean);
@@ -1680,9 +1800,22 @@ function tidyTodoTitle(t) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/* Is this text shaped like a chore at all? Used by the weak tail. */
-export function looksLikeTodo(text) {
-  return TODO_VERB_RE.test(String(text).trim());
+/* Is this text shaped like a chore at all? Used by the weak tail.
+
+   Names in front do not change the shape. "Bryce take out the trash every
+   Tuesday" is the archetypal chore, and it was filing itself as a CALENDAR
+   EVENT on Bryce's Tuesdays because the verb test was anchored at the start
+   of the sentence and the name sat in front of it. The names are stripped
+   with the same leadingNames() parseTodo uses to assign the chore, so the
+   two cannot disagree about where the verb starts. "Bryce soccer practice
+   Tuesday at 5" strips to "soccer practice ..." and is still an event. */
+export function looksLikeTodo(text, members) {
+  const t = String(text).trim();
+  const chore = s => TODO_VERB_RE.test(s) && !CAL_NOUN_RE.test(s);
+  if (chore(t)) return true;
+  if (!members || !members.length) return false;
+  const lead = leadingNames(t, members);
+  return !!lead && chore(lead.rest);
 }
 
 /* ===========================================================================
@@ -1792,6 +1925,156 @@ export function parseIngredient(line, opts = {}) {
     if (best) {
       out.category = best.category;
       out.pickYourself = !!best.pickYourself; out.onlineOk = !!best.onlineOk;
+    }
+  }
+  return out;
+}
+
+/* ===========================================================================
+ * 15. SEASONS
+ *
+ * The orchestra schedule arrives once a season as a PDF or an email: a
+ * header line and twenty dated lines. Typed one at a time, most never get
+ * typed, and then a kid is standing outside a school with no ride alert.
+ * This reads the whole block at once. It is a loop over parseQuickAdd —
+ * there is no second date grammar here — plus three things a schedule has
+ * that a single message does not:
+ *
+ *   - a HEADER: "Orchestra rehearsals — Addie, Jess driving". No date. Its
+ *     title, people and roles carry down to every dated line that lacks them.
+ *   - a DATE LIST: "Sept 15, 22, 29 — 6:30 pm" is three rows, not one.
+ *   - a PLACE after "@": "Sat Oct 3 vs Tigers 9am @ Bear Branch". The "@" is
+ *     a delimiter, not a location grammar; "at the church" stays in the title.
+ *
+ * Lines it cannot date come back with ok:false and their raw text, shown
+ * unticked and never guessed. Rows are one-off events, never a recurrence —
+ * schedules are irregular by nature; that is why they are pasted.
+ * ========================================================================= */
+
+const SEASON_MAX = 60;
+const WEEKDAY_LEAD = /^(?:(?:sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday|sday)?\.?,?)\s+/i;
+const MN_RE = Object.keys(MONTHS).sort((a, b) => b.length - a.length).join('|');
+/* "Sept 15, 22, 29" / "Sept 15, 22 & 29" / "9/15, 9/22, 9/29" */
+const DATE_LIST_MONTH = new RegExp(`\\b(${MN_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?((?:\\s*(?:,|&|and)\\s*(?:and\\s+)?\\d{1,2}(?:st|nd|rd|th)?\\b)+)`, 'i');
+const DATE_LIST_NUM   = /\b(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)((?:\s*(?:,|&|and)\s*(?:and\s+)?\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b)+)/i;
+
+/* Break a block into candidate lines: newlines, semicolons, bullets. */
+export function splitSeasonLines(text) {
+  return String(text || '')
+    .split(/\r?\n|;/)
+    .map(l => l.replace(/^\s*(?:[-–•*·]|\d+[.)])\s+/, '').trim())
+    .filter(Boolean);
+}
+
+/* One line that names several dates becomes several lines. */
+function expandDateList(line) {
+  let m = line.match(DATE_LIST_MONTH);
+  if (m) {
+    const days = [m[2], ...m[3].match(/\d{1,2}/g)];
+    return days.map(d => line.replace(m[0], `${m[1]} ${d}`));
+  }
+  m = line.match(DATE_LIST_NUM);
+  if (m) {
+    const dates = [m[1], ...m[2].match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/g)];
+    return dates.map(d => line.replace(m[0], d));
+  }
+  return [line];
+}
+
+function tidySeasonTitle(t) {
+  return String(t || '')
+    .replace(/\s*[—–\-:]+\s*$/, '')
+    .replace(/^\s*[—–\-:]+\s*/, '')
+    .replace(/\b(?:fall|spring|summer|winter)\s+\d{4}\b|\b20\d{2}\b/ig, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/* Is this block a schedule? ≥3 lines, ≥2 of them carrying a date, and a
+   question is never a schedule line. Cheap enough to run on every message. */
+export function looksLikeSeason(text, opts = {}) {
+  const lines = splitSeasonLines(text);
+  if (lines.length < 3) return false;
+  let dated = 0;
+  for (const l of lines) {
+    if (/\?\s*$/.test(l)) continue;
+    for (const piece of expandDateList(l)) {
+      const q = parseQuickAdd(piece.replace(WEEKDAY_LEAD, ''), { members: [], now: opts.now });
+      if (q.matched.includes('date')) { dated++; break; }
+    }
+    if (dated >= 2) return true;
+  }
+  return false;
+}
+
+/* opts: { members, now, me }
+   Returns { title, who:[names], people:[{name,role}], rows:[...], skipped:[raw] }.
+   Each row: { ok, date, start, end, allDay, title, location, people, raw }. */
+export function parseSeason(text, opts = {}) {
+  const now = opts.now || new Date();
+  const lines = splitSeasonLines(text);
+  const out = { title: '', who: [], people: [], rows: [], skipped: [] };
+
+  /* The header: the first line, when it carries no date. */
+  let start = 0;
+  if (lines.length) {
+    const h = parseQuickAdd(lines[0], { members: opts.members || [], now, me: opts.me });
+    if (!h.matched.includes('date') && !h.repeat) {
+      out.title  = tidySeasonTitle(h.title === 'Untitled' ? '' : h.title);
+      out.title  = out.title.charAt(0).toUpperCase() + out.title.slice(1);
+      out.people = h.people || [];
+      out.who    = out.people.map(p => p.name);
+      start = 1;
+    }
+  }
+
+  const seen = new Set();
+  for (const raw of lines.slice(start)) {
+    if (out.rows.length >= SEASON_MAX) { out.skipped.push(raw); continue; }
+    if (/\?\s*$/.test(raw)) {
+      out.skipped.push(raw);
+      out.rows.push({ ok: false, raw, title: null, date: null, start: null, end: null,
+                      allDay: false, location: null, people: [] });
+      continue;
+    }
+
+    /* "@ Bear Branch" is the place; everything before it is the event. */
+    let location = null, body = raw;
+    const at = raw.indexOf('@');
+    if (at > 0) { location = raw.slice(at + 1).trim() || null; body = raw.slice(0, at).trim(); }
+
+    for (const piece of expandDateList(body)) {
+      /* A leading "Tue" is decoration on "Tue 9/15"; only strip it when an
+         explicit date remains, so "Saturday 9am" still dates itself. */
+      const qopts = { members: opts.members || [], now, me: opts.me };
+      let q = parseQuickAdd(piece.replace(WEEKDAY_LEAD, ''), qopts);
+      if (!q.matched.includes('date')) q = parseQuickAdd(piece, qopts);
+      if (!q.matched.includes('date')) {
+        out.skipped.push(raw);
+        out.rows.push({ ok: false, raw, title: null, date: null, start: null, end: null,
+                        allDay: false, location: null, people: [] });
+        break;
+      }
+
+      let own = tidySeasonTitle(q.title === 'Untitled' ? '' : q.title)
+        .replace(/^(?:home|away)\b/i, s => s.toLowerCase());
+      let title;
+      if (!own)            title = out.title;
+      else if (!out.title) title = own;
+      else if (own.toLowerCase().includes(out.title.toLowerCase())) title = own;
+      else if (/^(?:vs\.?|v\.?|home|away|at)\b/i.test(own)) title = `${out.title} ${own}`;
+      else title = `${out.title} — ${own}`;
+      title = title.replace(/\s+/g, ' ').trim();
+      if (!title) title = 'Untitled';
+      title = title.charAt(0).toUpperCase() + title.slice(1);
+
+      const people = (q.people && q.people.length) ? q.people : out.people;
+      const key = `${q.date}|${q.allDay ? 'allday' : q.start}|${title.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.rows.push({
+        ok: true, date: q.date, start: q.allDay ? null : q.start, end: q.allDay ? null : q.end,
+        allDay: q.allDay, title, location, people, raw
+      });
     }
   }
   return out;

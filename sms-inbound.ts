@@ -1379,8 +1379,77 @@ const ROUTE_RE = {
   TODO_TELL  : /^(?:tell|ask|have|get|remind)\s+(.+?)\s+to\s+(.+)$/i,
   TODO_SELF  : /^(?:remind\s+me\s+to|i\s+(?:need|have)\s+to|i\s+should|i\s+gotta)\s+(.+)$/i,
   TODO_HOUSE : /^(?:we\s+(?:need|have)\s+to|someone|somebody|anyone)\s+(?:needs?\s+to\s+)?(.+)$/i,
-  TODO_TAG   : /^(?:to-?\s?do|task|chore)s?\s*:\s*(.+)$/i
+  TODO_TAG   : /^(?:to-?\s?do|task|chore)s?\s*:\s*(.+)$/i,
+
+  /* --- QUESTIONS -------------------------------------------------------
+     A question is answered, never filed. "anything Thursday?" used to
+     become an event titled "anything". These run at stage 0, before any
+     matcher that can write a row, and they need no pending question: they
+     answer or they say what they can answer. */
+  ASK_DINNER : /^(?:what'?s|whats|what\s+is|what\s+are\s+we\s+having)?\s*(?:for\s+)?dinner(?:\s+(.+?))?\s*\??$/i,
+  ASK_GOT    : /^(?:did|has|have)\s+(\w+)\s+(?:get|got|gotten|buy|bought|pick(?:ed)?\s+up|grab(?:bed)?)\s+(?:the\s+|any\s+|some\s+)?(.+?)\s*\??$/i,
+  ASK_HAVE   : /^(?:do|did)\s+we\s+(?:have|get|still\s+have|need)\s+(?:the\s+|any\s+|some\s+)?(.+?)\s*\??$/i,
+  ASK_DRIVER : /^who(?:'?s|\s+is|\s+has|\s+have)?\s+(?:driving|taking|picking\s+up|getting|bringing|dropping\s+off|got|has|have)\s+(.+?)\s*\??$/i,
+  ASK_DAY    : /^(?:what'?s\s+(?:on\s+)?the\s+(?:plan|schedule)|(?:what'?s|what\s+is)\s+(?:on|happening|going\s+on|up)|what\s+do\s+(?:we|i)\s+have|what\s+have\s+(?:we|i)\s+got|what'?s|what\s+is|is\s+there\s+anything|anything|schedule|plans?)\s*(?:on\s+|for\s+)?(.*?)\s*\??$/i
 };
+
+/* A fragment that is nothing but a day: "thursday", "tomorrow", "" (today).
+   Returns the date, or null when the fragment carries a title or a clock. */
+function bareDate(fragment, opts) {
+  const f = String(fragment || '').trim();
+  const now = opts.now || new Date();
+  if (!f || /^(?:today|tonight|now)$/i.test(f)) return ymd(now);
+  const q = parseQuickAdd(f, { members: [], now });
+  if (!q.matched.includes('date')) return null;
+  if (q.matched.includes('time'))  return null;
+  if (q.title && q.title !== 'Untitled') return null;
+  return q.date;
+}
+
+/* opts: { members, now }. Returns an ask_* intent or null. */
+function askIntent(body, opts = {}) {
+  const text = String(body || '').trim();
+  const members = opts.members || [];
+  let m;
+
+  if ((m = text.match(ROUTE_RE.ASK_DINNER))) {
+    const date = bareDate(m[1], opts);
+    /* "dinner is leftovers" has a tail that is not a day — not a question. */
+    if (date) return { intent: 'ask_dinner', date };
+  }
+
+  if ((m = text.match(ROUTE_RE.ASK_GOT))) {
+    const who = whoIn(m[1], members);
+    return { intent: 'ask_got', item: m[2].trim(), who: who[0] || null };
+  }
+  if ((m = text.match(ROUTE_RE.ASK_HAVE))) {
+    return { intent: 'ask_got', item: m[1].trim(), who: null };
+  }
+
+  if ((m = text.match(ROUTE_RE.ASK_DRIVER))) {
+    const who = whoIn(m[1], members);
+    let rest = m[1];
+    for (const n of who) rest = rest.replace(new RegExp(`\\b${n}\\b`, 'ig'), ' ');
+    rest = rest.replace(/\s+/g, ' ').trim();
+    /* "who's driving Addie to practice Thursday" — the place is not a day,
+       but the question is still about Thursday, so any date in the tail
+       counts. No date means today. */
+    const q = rest ? parseQuickAdd(rest, { members: [], now: opts.now || new Date() }) : null;
+    const date = q && q.matched.includes('date') ? q.date : ymd(opts.now || new Date());
+    return { intent: 'ask_driver', who: who[0] || null, date };
+  }
+
+  if ((m = text.match(ROUTE_RE.ASK_DAY))) {
+    const who = whoIn(m[1], members);
+    let rest = m[1];
+    for (const n of who) rest = rest.replace(new RegExp(`\\b${n}(?:'s)?\\b`, 'ig'), ' ');
+    rest = rest.replace(/\s+/g, ' ').trim();
+    const date = bareDate(rest, opts);
+    if (date) return { intent: 'ask_day', date, who: who[0] || null };
+  }
+
+  return null;
+}
 
 /* Does this text name a store? Returns the store row or null. */
 function routeStoreIn(stores, text) {
@@ -1435,6 +1504,21 @@ function routeIntent(body, opts = {}, from = 0) {
       const who = whoIn(ls[1], opts.members || []);
       if (who.length) return { intent: 'todo_show', who: who[0] };
     }
+    /* A pasted block. A schedule (≥3 lines, ≥2 dated) becomes many rows
+       behind one confirm; a pasted list with no dates at all and mostly
+       groceries goes to the shopping list in one go, through the same
+       multi-item path a comma list takes. Both before the questions and
+       the tails, after the list commands, so "list" alone never gets here. */
+    if (splitSeasonLines(text).length >= 3) {
+      if (looksLikeSeason(text, opts)) return { intent: 'season', season: parseSeason(text, opts) };
+      const probe = parseShopping(text, { stores, catalog: opts.catalog || [] });
+      const known = probe.items.filter(i => i.category !== 'other').length;
+      if (probe.items.length >= 3 && known * 2 >= probe.items.length) return { intent: 'shop' };
+    }
+    /* Questions. Before anything that can write a row: "anything
+       Thursday?" was becoming an event titled "anything". */
+    const ask = askIntent(text, opts);
+    if (ask) return ask;
   }
 
   /* 1 — a correction to whatever just happened. Runs before the edit matcher
@@ -1492,13 +1576,35 @@ function routeTail(text, opts = {}) {
   });
   const hasWhen = p.matched.includes('date') || p.matched.includes('time') || !!p.repeat;
 
+  /* A question mark that got this far is not a request to file anything.
+     "Dentist Thursday?" is genuinely ambiguous — asking about Thursday, or
+     adding the dentist? Ask rather than guess: answer the day, and offer
+     the add as a numbered reply. Anything else ending in "?" gets told what
+     can be answered. Neither writes a row. */
   if (ROUTE_RE.SHOP_STRONG.test(text)) return { intent: 'shop' };
+
+  if (/\?\s*$/.test(text)) {
+    const body = text.replace(/\?\s*$/, '').trim();
+    const questiony = /^(?:what|who|when|where|why|how|is|are|do|does|did|can|could|any|anything)\b/i.test(p.title || '');
+    if (p.matched.includes('date') && !p.repeat) {
+      /* "is there soccer Saturday?" names a day and asks: answer the day.
+         "Dentist Thursday?" names a day and a thing: answer the day AND
+         offer to add the thing, as a numbered reply. */
+      if (p.title && p.title !== 'Untitled' && !questiony) {
+        return { intent: 'ask_day', date: p.date, who: null, offer: body, offerTitle: p.title };
+      }
+      return { intent: 'ask_day', date: p.date, who: null };
+    }
+    return { intent: 'ask_help' };
+  }
 
   /* An imperative chore verb wins even against a clock. "Take out trash every
      Tuesday morning at 7" is a chore that has a preferred hour, not an
      appointment — and todos carry a due_time now, so the 7 is kept rather
-     than dropped. This is checked BEFORE the clock rule below. */
-  if (looksLikeTodo(text)) return { intent: 'todo' };
+     than dropped. This is checked BEFORE the clock rule below. Names in
+     front are looked past: "Bryce take out the trash every Tuesday" is the
+     same chore with an owner, not a weekly event. */
+  if (looksLikeTodo(text, opts.members)) return { intent: 'todo' };
 
   /* Everything else with a clock is an appointment, whatever frame wraps it.
      "I need to leave for the airport Friday 6am" reads like a todo — "need
@@ -1565,6 +1671,14 @@ const TODO_VERB_RE = new RegExp(
   TODO_VERBS.map(v => v.replace(/ /g, '\\s+')).join('|') +
   ')\\b\\s+\\S', 'i');
 
+/* Calendar nouns that happen to START with a chore verb. "Book club Tuesday
+   7pm" opens with "book", "study group" with "study", "check up" with
+   "check" — and each is an appointment, never a chore. Same rule that took
+   "practice" out of the verb list, applied to the compounds this family
+   actually says, so the verbs themselves can stay useful ("book the dentist",
+   "study for the test", "water the plants"). */
+const CAL_NOUN_RE = /^(?:please\s+|can\s+you\s+)?(?:book\s+club|study\s+(?:group|hall|session)|check[\s-]?up|water\s+polo|paint\s+night|(?:walk|read)[\s-]?a[\s-]?thon)\b/i;
+
 /* A deadline only counts when what follows is a bare date. "by Friday" is a
    due date. "by the register", "by the dozen", "by 8pm" are not — the last
    one has a time, which makes it an event with a reminder, and the schema
@@ -1586,7 +1700,7 @@ function todoStrong(text, opts) {
   /* A clock outranks a chore FRAME but not a chore VERB. "I need to leave
      for the airport Friday 6am" is an appointment however it is phrased;
      "take out the trash Tuesday at 7" is a chore with a preferred hour. */
-  if (!looksLikeTodo(t)) {
+  if (!looksLikeTodo(t, opts.members)) {
     const q = parseQuickAdd(t, { members: [], now: opts.now, me: opts.me });
     if (q.matched.includes('time')) return false;
   }
@@ -1649,7 +1763,13 @@ function parseTodo(input, opts = {}) {
        chore floating in the calendar with a time attached to nothing. */
     if (!out.due_on) out.due_on = q.date;
   }
-  if (q.repeat) out.repeat = q.repeat;
+  if (q.repeat) {
+    out.repeat = q.repeat;
+    /* A repeating chore needs a first occurrence or nothing ever nags and
+       nothing ever advances. "Feed the dog every day" starts today; "every
+       Tuesday" already carries next Tuesday as its date. */
+    if (!out.due_on) out.due_on = q.date || null;
+  }
 
   out.title = tidyTodoTitle(q.title && q.title !== 'Untitled' ? q.title : body);
   if (!out.assignees.length && !out.house) out.assignees = [opts.me].filter(Boolean);
@@ -1707,9 +1827,22 @@ function tidyTodoTitle(t) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/* Is this text shaped like a chore at all? Used by the weak tail. */
-function looksLikeTodo(text) {
-  return TODO_VERB_RE.test(String(text).trim());
+/* Is this text shaped like a chore at all? Used by the weak tail.
+
+   Names in front do not change the shape. "Bryce take out the trash every
+   Tuesday" is the archetypal chore, and it was filing itself as a CALENDAR
+   EVENT on Bryce's Tuesdays because the verb test was anchored at the start
+   of the sentence and the name sat in front of it. The names are stripped
+   with the same leadingNames() parseTodo uses to assign the chore, so the
+   two cannot disagree about where the verb starts. "Bryce soccer practice
+   Tuesday at 5" strips to "soccer practice ..." and is still an event. */
+function looksLikeTodo(text, members) {
+  const t = String(text).trim();
+  const chore = s => TODO_VERB_RE.test(s) && !CAL_NOUN_RE.test(s);
+  if (chore(t)) return true;
+  if (!members || !members.length) return false;
+  const lead = leadingNames(t, members);
+  return !!lead && chore(lead.rest);
 }
 
 /* ===========================================================================
@@ -1824,6 +1957,156 @@ function parseIngredient(line, opts = {}) {
   return out;
 }
 
+/* ===========================================================================
+ * 15. SEASONS
+ *
+ * The orchestra schedule arrives once a season as a PDF or an email: a
+ * header line and twenty dated lines. Typed one at a time, most never get
+ * typed, and then a kid is standing outside a school with no ride alert.
+ * This reads the whole block at once. It is a loop over parseQuickAdd —
+ * there is no second date grammar here — plus three things a schedule has
+ * that a single message does not:
+ *
+ *   - a HEADER: "Orchestra rehearsals — Addie, Jess driving". No date. Its
+ *     title, people and roles carry down to every dated line that lacks them.
+ *   - a DATE LIST: "Sept 15, 22, 29 — 6:30 pm" is three rows, not one.
+ *   - a PLACE after "@": "Sat Oct 3 vs Tigers 9am @ Bear Branch". The "@" is
+ *     a delimiter, not a location grammar; "at the church" stays in the title.
+ *
+ * Lines it cannot date come back with ok:false and their raw text, shown
+ * unticked and never guessed. Rows are one-off events, never a recurrence —
+ * schedules are irregular by nature; that is why they are pasted.
+ * ========================================================================= */
+
+const SEASON_MAX = 60;
+const WEEKDAY_LEAD = /^(?:(?:sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday|sday)?\.?,?)\s+/i;
+const MN_RE = Object.keys(MONTHS).sort((a, b) => b.length - a.length).join('|');
+/* "Sept 15, 22, 29" / "Sept 15, 22 & 29" / "9/15, 9/22, 9/29" */
+const DATE_LIST_MONTH = new RegExp(`\\b(${MN_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?((?:\\s*(?:,|&|and)\\s*(?:and\\s+)?\\d{1,2}(?:st|nd|rd|th)?\\b)+)`, 'i');
+const DATE_LIST_NUM   = /\b(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)((?:\s*(?:,|&|and)\s*(?:and\s+)?\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b)+)/i;
+
+/* Break a block into candidate lines: newlines, semicolons, bullets. */
+function splitSeasonLines(text) {
+  return String(text || '')
+    .split(/\r?\n|;/)
+    .map(l => l.replace(/^\s*(?:[-–•*·]|\d+[.)])\s+/, '').trim())
+    .filter(Boolean);
+}
+
+/* One line that names several dates becomes several lines. */
+function expandDateList(line) {
+  let m = line.match(DATE_LIST_MONTH);
+  if (m) {
+    const days = [m[2], ...m[3].match(/\d{1,2}/g)];
+    return days.map(d => line.replace(m[0], `${m[1]} ${d}`));
+  }
+  m = line.match(DATE_LIST_NUM);
+  if (m) {
+    const dates = [m[1], ...m[2].match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/g)];
+    return dates.map(d => line.replace(m[0], d));
+  }
+  return [line];
+}
+
+function tidySeasonTitle(t) {
+  return String(t || '')
+    .replace(/\s*[—–\-:]+\s*$/, '')
+    .replace(/^\s*[—–\-:]+\s*/, '')
+    .replace(/\b(?:fall|spring|summer|winter)\s+\d{4}\b|\b20\d{2}\b/ig, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/* Is this block a schedule? ≥3 lines, ≥2 of them carrying a date, and a
+   question is never a schedule line. Cheap enough to run on every message. */
+function looksLikeSeason(text, opts = {}) {
+  const lines = splitSeasonLines(text);
+  if (lines.length < 3) return false;
+  let dated = 0;
+  for (const l of lines) {
+    if (/\?\s*$/.test(l)) continue;
+    for (const piece of expandDateList(l)) {
+      const q = parseQuickAdd(piece.replace(WEEKDAY_LEAD, ''), { members: [], now: opts.now });
+      if (q.matched.includes('date')) { dated++; break; }
+    }
+    if (dated >= 2) return true;
+  }
+  return false;
+}
+
+/* opts: { members, now, me }
+   Returns { title, who:[names], people:[{name,role}], rows:[...], skipped:[raw] }.
+   Each row: { ok, date, start, end, allDay, title, location, people, raw }. */
+function parseSeason(text, opts = {}) {
+  const now = opts.now || new Date();
+  const lines = splitSeasonLines(text);
+  const out = { title: '', who: [], people: [], rows: [], skipped: [] };
+
+  /* The header: the first line, when it carries no date. */
+  let start = 0;
+  if (lines.length) {
+    const h = parseQuickAdd(lines[0], { members: opts.members || [], now, me: opts.me });
+    if (!h.matched.includes('date') && !h.repeat) {
+      out.title  = tidySeasonTitle(h.title === 'Untitled' ? '' : h.title);
+      out.title  = out.title.charAt(0).toUpperCase() + out.title.slice(1);
+      out.people = h.people || [];
+      out.who    = out.people.map(p => p.name);
+      start = 1;
+    }
+  }
+
+  const seen = new Set();
+  for (const raw of lines.slice(start)) {
+    if (out.rows.length >= SEASON_MAX) { out.skipped.push(raw); continue; }
+    if (/\?\s*$/.test(raw)) {
+      out.skipped.push(raw);
+      out.rows.push({ ok: false, raw, title: null, date: null, start: null, end: null,
+                      allDay: false, location: null, people: [] });
+      continue;
+    }
+
+    /* "@ Bear Branch" is the place; everything before it is the event. */
+    let location = null, body = raw;
+    const at = raw.indexOf('@');
+    if (at > 0) { location = raw.slice(at + 1).trim() || null; body = raw.slice(0, at).trim(); }
+
+    for (const piece of expandDateList(body)) {
+      /* A leading "Tue" is decoration on "Tue 9/15"; only strip it when an
+         explicit date remains, so "Saturday 9am" still dates itself. */
+      const qopts = { members: opts.members || [], now, me: opts.me };
+      let q = parseQuickAdd(piece.replace(WEEKDAY_LEAD, ''), qopts);
+      if (!q.matched.includes('date')) q = parseQuickAdd(piece, qopts);
+      if (!q.matched.includes('date')) {
+        out.skipped.push(raw);
+        out.rows.push({ ok: false, raw, title: null, date: null, start: null, end: null,
+                        allDay: false, location: null, people: [] });
+        break;
+      }
+
+      let own = tidySeasonTitle(q.title === 'Untitled' ? '' : q.title)
+        .replace(/^(?:home|away)\b/i, s => s.toLowerCase());
+      let title;
+      if (!own)            title = out.title;
+      else if (!out.title) title = own;
+      else if (own.toLowerCase().includes(out.title.toLowerCase())) title = own;
+      else if (/^(?:vs\.?|v\.?|home|away|at)\b/i.test(own)) title = `${out.title} ${own}`;
+      else title = `${out.title} — ${own}`;
+      title = title.replace(/\s+/g, ' ').trim();
+      if (!title) title = 'Untitled';
+      title = title.charAt(0).toUpperCase() + title.slice(1);
+
+      const people = (q.people && q.people.length) ? q.people : out.people;
+      const key = `${q.date}|${q.allDay ? 'allday' : q.start}|${title.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.rows.push({
+        ok: true, date: q.date, start: q.allDay ? null : q.start, end: q.allDay ? null : q.end,
+        allDay: q.allDay, title, location, people, raw
+      });
+    }
+  }
+  return out;
+}
+
 /* Split a pasted block into ingredient lines. Headings like "For the sauce:"
    are dropped; blank lines are dropped; everything else is an ingredient. */
 function splitIngredientBlock(text) {
@@ -1870,7 +2153,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-10i-meals';
+const BUILD = '2026-09-11c-m1';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
@@ -1972,7 +2255,8 @@ function endInstant(date: string, start: string, end: string, tz: string) {
   return iso;
 }
 
-async function createEvent(db: any, p: any, members: any[], sender: any, tz: string, date: string) {
+async function createEvent(db: any, p: any, members: any[], sender: any, tz: string, date: string,
+                           extra: Record<string, any> = {}) {
   const member   = members.find((m: any) => m.name === p.member);
   const startsAt = p.allDay ? null : wallToUtc(date, p.start, tz);
   // Dropped on the floor until now, which is why "Soccer 6-8pm" lost the 8.
@@ -1986,12 +2270,89 @@ async function createEvent(db: any, p: any, members: any[], sender: any, tz: str
     repeat_interval: p.repeat?.interval ?? 1,
     repeat_days:     p.repeat?.days     ?? [],
     repeat_until:    p.repeat?.until    ?? null,
-    created_by: sender.id, source: 'sms'
+    created_by: sender.id, source: 'sms', ...extra
   }).select().single();
   if (error) return null;
   await writeCastAndReminders(db, ev, p.people, members, p.leadMinutes, tz, !!p.repeat,
                               p.matched.includes('lead'));
   return ev;
+}
+
+/* ---------------------------------------------------------------------------
+ * SEASONS — a pasted schedule, N one-off events behind one question.
+ *
+ * Never a recurrence: schedules are irregular, that is why they get pasted.
+ * Never the rides question: the header named the cast once for all of them,
+ * and twenty "Rides?" texts is how a family learns to ignore the number.
+ * -------------------------------------------------------------------------*/
+const SEASON_SHOW = 12;
+
+function seasonCast(people: any[]) {
+  const going = (people ?? []).filter((x: any) => !['driving','dropoff','pickup'].includes(x.role)).map((x: any) => x.name);
+  const rides = (people ?? []).filter((x: any) =>  ['driving','dropoff','pickup'].includes(x.role))
+    .map((x: any) => roleVerb(x.name, x.role));
+  return [going.join(', '), rides.length ? `(${rides.join(', ')})` : ''].filter(Boolean).join(' ');
+}
+
+function seasonRowLine(r: any) {
+  const when = r.allDay ? 'all day'
+    : `${clock(r.start).replace(/ \(.*\)$/, '')}${r.end ? `–${clock(r.end).replace(/ \(.*\)$/, '')}` : ''}`;
+  return `${prettyShort(r.date)} ${when}${r.title && r.title !== 'Untitled' ? ` ${r.title}` : ''}${r.location ? ` @ ${r.location}` : ''}`;
+}
+
+async function offerSeason(db: any, season: any, sender: any) {
+  const rows = season.rows.filter((r: any) => r.ok);
+  if (!rows.length) {
+    return twiml(`I couldn't read a date on any of those ${season.rows.length} lines. ` +
+                 `One per line, like "Tue 9/15 6:30-8pm".`);
+  }
+  const shown = rows.slice(0, SEASON_SHOW).map((r: any, i: number) => `${i + 1}. ${seasonRowLine(r)}`);
+  if (rows.length > SEASON_SHOW) shown.push(`+${rows.length - SEASON_SHOW} more`);
+  const bad = season.skipped.length
+    ? `\n${season.skipped.length} line${season.skipped.length === 1 ? '' : 's'} I couldn't read: ` +
+      season.skipped.slice(0, 3).map((x: string) => `"${x}"`).join(', ') + (season.skipped.length > 3 ? '…' : '')
+    : '';
+  const head = [season.title, seasonCast(season.people)].filter(Boolean).join(' — ');
+
+  /* Keys: "1"/"yes"/"all" adds everything; any other row number (or "skip")
+     opens the skip path, which re-reads every number in the reply. Row 1
+     cannot be skipped by number alone — "skip 1" does it. */
+  const options: any[] = [];
+  for (let i = 2; i <= rows.length; i++) options.push({ keys: [String(i)], value: 'skip' });
+  options.push({ keys: ['skip', 'not', 'except'], value: 'skip' });
+  options.push({ keys: ['1', 'yes', 'all', 'add', 'y'], value: 'all' });
+  options.push({ keys: ['cancel', 'stop', 'no', 'n'], value: 'cancel' });
+
+  await db.from('sms_pending').upsert({
+    household_id: HOUSEHOLD, member_id: sender.id, kind: 'season_confirm',
+    payload: { title: season.title, people: season.people, rows },
+    options,
+    expires_at: new Date(Date.now() + 15 * 60_000).toISOString()
+  }, { onConflict: 'member_id' });
+
+  return twiml(`${head ? head + '\n' : ''}${shown.join('\n')}${bad}\n\n` +
+               `Reply 1 to add all ${rows.length}, the numbers to skip (e.g. 3 5), or cancel.`);
+}
+
+async function insertSeason(db: any, pl: any, skip: Set<number>, sender: any, members: any[], tz: string) {
+  let added = 0;
+  for (let i = 0; i < pl.rows.length; i++) {
+    if (skip.has(i + 1)) continue;
+    const r = pl.rows[i];
+    const people = r.people ?? [];
+    const going = people.find((x: any) => x.role === 'going');
+    const p = {
+      title: r.title || 'Untitled', allDay: !!r.allDay, start: r.start, end: r.end,
+      member: going ? going.name : (people[0] ? people[0].name : null),
+      people, leadMinutes: sender.default_lead_minutes ?? 30, repeat: null, matched: [] as string[]
+    };
+    const ev = await createEvent(db, p, members, sender, tz, r.date,
+                                 { source: 'season', location: r.location ?? null });
+    if (ev) added++;
+  }
+  const who = seasonCast(pl.people);
+  return twiml(`Added ${added} to the calendar${who ? ` for ${who}` : ''}` +
+               (skip.size ? `, skipped ${skip.size}` : '') + '.');
 }
 
 /* ---------------------------------------------------------------------------
@@ -2340,9 +2701,13 @@ async function addTodo(db: any, body: string, sender: any, members: any[], tz: s
   if (error) return twiml(`Could not save that: ${error.message}`);
 
   if (made?.length) {
+    /* created_at is set explicitly: an upsert only touches the columns it
+       names, and "delete that" compares this timestamp against the newest
+       shopping row to decide which one you meant. */
     await db.from('sms_last_action').upsert({
       member_id: sender.id, household_id: HOUSEHOLD,
-      todo_id: made[0].id, event_id: null, action: 'create'
+      todo_id: made[0].id, event_id: null, occurrence_date: null, action: 'create',
+      created_at: new Date().toISOString()
     }, { onConflict: 'member_id' });
   }
 
@@ -2362,9 +2727,54 @@ async function addTodo(db: any, body: string, sender: any, members: any[], tz: s
                  : ''));
 }
 
-async function finishTodo(db: any, needle: string, sender: any) {
-  const { data: rows } = await db.rpc('member_todos', { p_member: sender.id });
-  if (!rows?.length) return twiml('Nothing open on your list.');
+/* Whose chore is this, said out loud when it is not the sender's own. Jess
+   closing Bryce's trash must read back "(Bryce)" or a wrong pick is
+   invisible. A shared one says so; the sender's own says nothing. */
+function ownerTag(t: any, sender: any, members: any[]) {
+  if (t.assignee_id == null) return ' (house)';
+  if (t.assignee_id === sender.id) return '';
+  const m = members.find((x: any) => x.id === t.assignee_id);
+  return m ? ` (${m.name})` : '';
+}
+
+/* Everything this person is allowed to close by text: their own list, the
+   house's shared items, the lists of anyone whose alerts route to them
+   (Bryce has no phone; his nag lands on Jess; her "did trash" has to reach
+   his row), and — for an adult — anything they handed out themselves. */
+async function closableTodos(db: any, sender: any, members: any[]) {
+  const isAdult = ['owner','adult'].includes(sender.role);
+  const wards = members.filter((m: any) =>
+    m.notify_via_member_id === sender.id && m.id !== sender.id).map((m: any) => m.id);
+  const ors = [`assignee_id.eq.${sender.id}`, 'assignee_id.is.null'];
+  if (wards.length) ors.push(`assignee_id.in.(${wards.join(',')})`);
+  if (isAdult)      ors.push(`assigned_by.eq.${sender.id}`);
+  const { data } = await db.from('todos')
+    .select('id, title, assignee_id, assigned_by, due_on')
+    .eq('household_id', HOUSEHOLD)
+    .is('deleted_at', null).is('cleared_at', null).is('completed_at', null)
+    .or(ors.join(','));
+  return data ?? [];
+}
+
+/* The one way a todo gets closed by text. Records it as the sender's last
+   action so a second "did it" says "already done" instead of closing
+   something else. */
+async function completeTodo(db: any, t: any, sender: any, members: any[]) {
+  await db.from('todos').update({
+    completed_at: new Date().toISOString(), completed_by: sender.id
+  }).eq('id', t.id);
+  await db.from('reminders').delete().eq('todo_id', t.id).is('sent_at', null);
+  await db.from('sms_last_action').upsert({
+    member_id: sender.id, household_id: HOUSEHOLD,
+    todo_id: t.id, event_id: null, occurrence_date: null, action: 'done',
+    created_at: new Date().toISOString()
+  }, { onConflict: 'member_id' });
+  return twiml(`Done: ${t.title}${ownerTag(t, sender, members)}`);
+}
+
+async function finishTodo(db: any, needle: string, sender: any, members: any[]) {
+  const rows = await closableTodos(db, sender, members);
+  if (!rows.length) return twiml('Nothing open on your list.');
 
   const scored = rows.map((t: any) => ({ t, s: scoreTitle(needle, t.title) }))
                      .filter((x: any) => x.s >= 0.5)
@@ -2374,27 +2784,186 @@ async function finishTodo(db: any, needle: string, sender: any) {
 
   /* A clear winner is taken and echoed — completion is one tap to undo and
      the echo makes a wrong pick obvious. A tie is asked about, because
-     guessing between two real chores just moves the problem. */
+     guessing between two real chores just moves the problem. Each option
+     names its owner: two "Unload the dishwasher" rows are two people. */
   if (scored.length > 1 && scored[1].s === scored[0].s) {
-    const opts = scored.slice(0, 4).map((x: any, i: number) =>
-      ({ keys: [String(i + 1)], value: x.t.id }));
+    const few = scored.slice(0, 4);
+    const opts = few.map((x: any, i: number) => ({ keys: [String(i + 1)], value: x.t.id }));
+    opts.push({ keys: ['cancel','stop','no'], value: 'cancel' });
     await db.from('sms_pending').upsert({
       household_id: HOUSEHOLD, member_id: sender.id, kind: 'pick_todo',
       payload: {}, options: opts,
       expires_at: new Date(Date.now() + 30 * 60_000).toISOString()
     }, { onConflict: 'member_id' });
     return twiml('Which one?\n' +
-      scored.slice(0, 4).map((x: any, i: number) => `${i + 1} = ${x.t.title}`).join('\n'));
+      few.map((x: any, i: number) => `${i + 1} = ${x.t.title}${ownerTag(x.t, sender, members)}`).join('\n'));
   }
 
-  const hit = scored[0].t;
-  await db.from('todos').update({
-    completed_at: new Date().toISOString(), completed_by: sender.id
-  }).eq('id', hit.id);
-  await db.from('reminders').delete().eq('todo_id', hit.id).is('sent_at', null);
-
-  return twiml(`Done: ${hit.title}`);
+  return await completeTodo(db, scored[0].t, sender, members);
 }
+
+/* ===========================================================================
+ * QUESTIONS
+ *
+ * "anything Thursday?" is answered from the same expander the morning digest
+ * reads (member_day → occurrences_on → event_cast), so the text number and
+ * the 6:30 message can never disagree about what Thursday holds. Nothing in
+ * this section writes a row, and nothing here touches sms_last_action.
+ * ========================================================================= */
+
+/* One day for the whole house: every member's member_day merged by
+   occurrence, plus any occurrence with nobody on it (member_id null, no
+   cast) which member_day cannot see. */
+async function householdDay(db: any, members: any[], date: string) {
+  const byKey = new Map<string, any>();
+  const key = (r: any) => `${r.title}|${r.all_day ? 'allday' : r.starts_at}`;
+  for (const m of members) {
+    const { data: rows } = await db.rpc('member_day', { p_member: m.id, p_date: date });
+    for (const r of rows ?? []) {
+      const k = key(r);
+      if (!byKey.has(k)) byKey.set(k, { ...r, cast: [] });
+      byKey.get(k).cast.push({ id: m.id, name: m.name, role: r.role });
+    }
+  }
+  const { data: all } = await db.rpc('occurrences_on', { p_date: date });
+  for (const o of all ?? []) {
+    const k = key(o);
+    if (!byKey.has(k)) byKey.set(k, { ...o, role: null, cast: [] });
+  }
+  return [...byKey.values()].sort((a: any, b: any) =>
+    a.all_day !== b.all_day ? (a.all_day ? -1 : 1)
+    : String(a.starts_at ?? '').localeCompare(String(b.starts_at ?? '')));
+}
+
+/* "Jess drives", "Erich brings them back" — the role as the answer to
+   "who's driving". */
+function roleVerb(name: string, role: string) {
+  switch (role) {
+    case 'driving': return `${name} drives`;
+    case 'dropoff': return `${name} takes them`;
+    case 'pickup':  return `${name} brings them back`;
+    case 'helping': return `${name} helps`;
+    case 'optional':return `${name} maybe`;
+    default:        return name;
+  }
+}
+const RIDE_ROLES = ['driving', 'dropoff', 'pickup'];
+
+function dayLine(o: any, tz: string) {
+  const when = o.all_day ? 'All day' : clock(utcToWall(o.starts_at, tz)).replace(/ \(.*\)$/, '');
+  const going  = o.cast.filter((c: any) => !RIDE_ROLES.includes(c.role)).map((c: any) => roleVerb(c.name, c.role));
+  const riding = o.cast.filter((c: any) =>  RIDE_ROLES.includes(c.role)).map((c: any) => roleVerb(c.name, c.role));
+  const who = [going.length ? going.join(', ') : (o.cast.length ? '' : 'Everyone'), riding.join(', ')]
+    .filter(Boolean).join('; ');
+  return `${when}  ${o.title}${who ? ` — ${who}` : ''}`;
+}
+
+/* Tonight's dinner, phrased exactly as the digest phrases it. */
+async function dinnerLine(db: any, house: any, date: string) {
+  const { data: meal } = await db.from('meal_plan')
+    .select('id, ready_by, freeform, cook_id, created_by, done_at, recipes(name)')
+    .eq('household_id', HOUSEHOLD).eq('plan_date', date).eq('slot', 'dinner')
+    .is('deleted_at', null).maybeSingle();
+  if (!meal) return null;
+  const dish = (meal as any).recipes?.name || meal.freeform || 'Dinner';
+  const cookId = meal.cook_id ?? house?.default_cook_id ?? meal.created_by ?? null;
+  let cookName = '';
+  if (cookId) {
+    const { data: c } = await db.from('members').select('name').eq('id', cookId).maybeSingle();
+    cookName = c?.name ?? '';
+  }
+  const who = cookName ? ` — ${cookName} cooks` : '';
+  const by  = meal.ready_by ? `${who ? ',' : ' —'} on the table by ${clock12(meal.ready_by)}` : '';
+  return `Dinner: ${dish}${who}${by}${meal.done_at ? ' (done)' : ''}`;
+}
+
+const clock12 = (t: string) => { const [h, m] = String(t).split(':').map(Number);
+  return `${h % 12 || 12}${m ? ':' + String(m).padStart(2,'0') : ''}${h < 12 ? 'am' : 'pm'}`; };
+
+async function answerDay(db: any, house: any, members: any[], routed: any, sender: any, tz: string) {
+  const date = routed.date;
+  const who  = routed.who
+    ? members.find((m: any) => m.name.toLowerCase() === String(routed.who).toLowerCase()) : null;
+  let day = await householdDay(db, members, date);
+  if (who) day = day.filter((o: any) => o.cast.some((c: any) => c.id === who.id));
+
+  const head = `${who ? who.name + ', ' : ''}${pretty(date)}:`;
+  const lines = day.map((o: any) => dayLine(o, tz));
+  const dinner = await dinnerLine(db, house, date);
+  let text = lines.length
+    ? `${head}\n${lines.join('\n')}`
+    : `${who ? who.name + ' has nothing' : 'Nothing'} on ${pretty(date)}.`;
+  if (dinner) text += `\n${dinner}`;
+
+  /* "Dentist Thursday?" — answered above; the add is one reply away, through
+     the route_intent question that already exists, so no new pending kind. */
+  if (routed.offer) {
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'route_intent',
+      payload: { body: routed.offer },
+      options: [ { keys: ['1','yes','add','y'], value: 'event' },
+                 { keys: ['cancel','stop','no','n'], value: 'cancel' } ],
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    text += `\n\nReply 1 to add "${routed.offerTitle}" on ${prettyShort(date)}.`;
+  }
+  return twiml(text);
+}
+
+async function answerDriver(db: any, members: any[], routed: any, tz: string) {
+  if (!routed.who) return twiml('Who? Say "who\'s driving Addie Monday".');
+  const who = members.find((m: any) => m.name.toLowerCase() === String(routed.who).toLowerCase());
+  if (!who) return twiml(`I don't know ${routed.who}.`);
+  const day = (await householdDay(db, members, routed.date))
+    .filter((o: any) => o.cast.some((c: any) => c.id === who.id));
+  if (!day.length) return twiml(`${who.name} has nothing on ${pretty(routed.date)}.`);
+  const lines = day.map((o: any) => {
+    const when = o.all_day ? 'All day' : clock(utcToWall(o.starts_at, tz)).replace(/ \(.*\)$/, '');
+    const rides = o.cast.filter((c: any) => RIDE_ROLES.includes(c.role)).map((c: any) => roleVerb(c.name, c.role));
+    return `${when}  ${o.title} — ${rides.length ? rides.join(', ') : "nobody's driving yet"}`;
+  });
+  return twiml(`${who.name}, ${pretty(routed.date)}:\n${lines.join('\n')}`);
+}
+
+async function answerDinner(db: any, house: any, routed: any) {
+  const line = await dinnerLine(db, house, routed.date);
+  const when = routed.date === nowYmd(house?.timezone) ? 'tonight' : `on ${prettyShort(routed.date)}`;
+  if (!line) return twiml(`Nothing planned for dinner ${when}.`);
+  return twiml(line.replace(/^Dinner:/, `Dinner ${when}:`));
+}
+
+const nowYmd = (tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'America/Chicago',
+  year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+/* "did Jess get the milk" — on the list unbought, bought (by whom, when), or
+   not on the list at all. The item goes through the shopping parser so
+   "the milk" and "2% milk" land on the same catalog name. */
+async function answerGot(db: any, members: any[], routed: any, tz: string) {
+  const { stores, catalog } = await shopContext(db);
+  const parsed = parseShopping(routed.item, { stores, catalog });
+  const wanted = (parsed.items.length ? parsed.items.map((i: any) => i.name) : [routed.item])
+    .map((s: string) => s.toLowerCase());
+  const { data: live } = await db.from('shopping_items')
+    .select('name, got, got_at, got_by').eq('household_id', HOUSEHOLD).is('cleared_at', null);
+  const lower = (r: any) => String(r.name).toLowerCase();
+  let hits = (live ?? []).filter((r: any) => wanted.includes(lower(r)));
+  if (!hits.length) hits = (live ?? []).filter((r: any) =>
+    wanted.some(w => lower(r).includes(w) || w.includes(lower(r))));
+  if (!hits.length) return twiml(`"${wanted.join(', ')}" isn't on the list.`);
+
+  const nameOf = (id: string | null) => members.find((m: any) => m.id === id)?.name ?? 'Someone';
+  const today = nowYmd(tz);
+  const lines = hits.map((h: any) => {
+    if (!h.got) return `${h.name} — on the list, not bought yet.`;
+    const d = h.got_at ? new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(h.got_at)) : null;
+    const when = !d ? '' : d === today ? ` today at ${clock(utcToWall(h.got_at, tz)).replace(/ \(.*\)$/, '')}` : ` on ${prettyShort(d)}`;
+    return `${nameOf(h.got_by)} got ${h.name}${when}.`;
+  });
+  return twiml(lines.join('\n'));
+}
+
+const ASK_HELP = 'I can answer: "what\'s Thursday", "who\'s driving Addie Monday", ' +
+                 '"what\'s for dinner", "did Jess get the milk". To add something, leave off the "?".';
 
 const prettyShort = (d: string) =>
   new Date(d + 'T12:00:00Z').toLocaleDateString('en-US',
@@ -2601,7 +3170,7 @@ Deno.serve(async (req) => {
   const db   = admin();
   console.log('sms-inbound ACCEPTED build=' + BUILD + ' from ' + from);
 
-  const { data: house } = await db.from('households').select('timezone').eq('id', HOUSEHOLD).single();
+  const { data: house } = await db.from('households').select('timezone, default_cook_id').eq('id', HOUSEHOLD).single();
   const tz = house?.timezone || 'America/Chicago';
   const { data: members } = await db.from('members').select('*')
     .eq('household_id', HOUSEHOLD).is('deleted_at', null);
@@ -2655,6 +3224,28 @@ Deno.serve(async (req) => {
                    : hit.value === 'there' ? 'you take them'
                    : 'you bring them back';
         return twiml(`Got it — ${said}.`);
+      }
+
+      if (pend.kind === 'season_confirm') {
+        if (hit.value === 'cancel') return twiml('Dropped it — nothing added.');
+        const skip = new Set<number>();
+        if (hit.value === 'skip') {
+          for (const d of answer.match(/\d+/g) ?? []) skip.add(+d);
+        }
+        return await insertSeason(db, pl, skip, sender, members ?? [], tz);
+      }
+
+      /* "Which one?" after an ambiguous "did the dishes". This kind was
+         written by finishTodo and never read here, so a reply of "1" fell
+         through and was routed as a brand-new message. */
+      if (pend.kind === 'pick_todo') {
+        if (hit.value === 'cancel') return twiml('Left it open.');
+        const { data: t } = await db.from('todos')
+          .select('id, title, assignee_id, completed_at')
+          .eq('id', hit.value).is('deleted_at', null).maybeSingle();
+        if (!t) return twiml('That one is already gone.');
+        if (t.completed_at) return twiml(`Already done: ${t.title}${ownerTag(t, sender, members ?? [])}`);
+        return await completeTodo(db, t, sender, members ?? []);
       }
 
       if (pend.kind === 'route_intent') {
@@ -2725,6 +3316,10 @@ Deno.serve(async (req) => {
       'Say "list" or "HEB list" to see it\n' +
       '"new list" after shopping, "clear the HEB list" to wipe one\n' +
       'Wrong item? "remove bike". Bought it? "got milk"\n' +
+      'Chores: "Bryce take out the trash every Tuesday"\n' +
+      'See them: "my list" or "Bryce\'s list". Finished: "did the trash"\n' +
+      'Ask: "what\'s Thursday", "who\'s driving Addie Monday", "what\'s for dinner"\n' +
+      'A whole schedule: paste it, one date per line, with a first line like "Orchestra — Addie, Jess driving"\n' +
       'Reply STOP to opt out.\n' +
       `build ${BUILD}`);
   }
@@ -2745,9 +3340,22 @@ Deno.serve(async (req) => {
      back as 'stateful' and keep their own matchers below, because "no, make
      it 4" means nothing without knowing what just happened. */
   const now = nowInTz(tz);
-  const routeCtx = { stores: (await shopContext(db)).stores,
+  const shopCtx  = await shopContext(db);
+  const routeCtx = { stores: shopCtx.stores, catalog: shopCtx.catalog,
                      members: names, now, me: sender.name };
   const routed = routeIntent(body, routeCtx);
+
+  /* ---- a pasted schedule ---------------------------------------------------
+     Many rows, one question, no rides follow-up. */
+  if (routed.intent === 'season') return await offerSeason(db, routed.season, sender);
+
+  /* ---- QUESTIONS -----------------------------------------------------------
+     Answered from the same expander the digest reads. No row is written. */
+  if (routed.intent === 'ask_day')    return await answerDay(db, house, members ?? [], routed, sender, tz);
+  if (routed.intent === 'ask_driver') return await answerDriver(db, members ?? [], routed, tz);
+  if (routed.intent === 'ask_dinner') return await answerDinner(db, house, routed);
+  if (routed.intent === 'ask_got')    return await answerGot(db, members ?? [], routed, tz);
+  if (routed.intent === 'ask_help')   return twiml(ASK_HELP);
 
   if (routed.intent === 'show' && !routed.store) return await showShopping(db);
   if (routed.intent === 'trip_done') return await clearList(db, routed.store, true);
@@ -2769,7 +3377,50 @@ Deno.serve(async (req) => {
   }
 
   if (routed.intent === 'todo_done') {
-    return await finishTodo(db, routed.text, sender);
+    return await finishTodo(db, routed.text, sender, members ?? []);
+  }
+
+  /* ---- "did it" / "finished" with nothing named ---------------------------
+     Only the last thing this person was told about can be meant: the nag
+     they just received, the todo they just added, or the event they just
+     made. routeIntent flags it as stateful/did; until now nothing consumed
+     that flag, so "did it" fell all the way through to "which did you
+     mean? 1 = calendar event ..." — after a nag that had just asked for
+     exactly this reply. */
+  if (routed.intent === 'stateful' && routed.why === 'did') {
+    const { data: la } = await db.from('sms_last_action').select('*')
+      .eq('member_id', sender.id).maybeSingle();
+
+    if (la?.todo_id) {
+      const { data: t } = await db.from('todos')
+        .select('id, title, assignee_id, completed_at')
+        .eq('id', la.todo_id).is('deleted_at', null).maybeSingle();
+      if (!t) return twiml('That one is already gone.');
+      if (t.completed_at) return twiml(`Already done: ${t.title}${ownerTag(t, sender, members ?? [])}`);
+      return await completeTodo(db, t, sender, members ?? []);
+    }
+
+    if (la?.event_id) {
+      const { data: ev } = await db.from('events').select('id, title, repeat_freq, done_at')
+        .eq('id', la.event_id).is('deleted_at', null).maybeSingle();
+      if (!ev) return twiml('That one is already gone.');
+      /* One occurrence of a series is ticked in event_done; a one-off gets
+         done_at. Same two facts the app's check-box writes. */
+      if (ev.repeat_freq && la.occurrence_date) {
+        await db.from('event_done').upsert({
+          household_id: HOUSEHOLD, event_id: ev.id,
+          occurrence_date: la.occurrence_date, done_by: sender.id
+        }, { onConflict: 'event_id,occurrence_date' });
+      } else {
+        if (ev.done_at) return twiml(`Already done: ${ev.title}`);
+        await db.from('events').update({
+          done_at: new Date().toISOString(), done_by: sender.id
+        }).eq('id', ev.id);
+      }
+      return twiml(`Done: ${ev.title}`);
+    }
+
+    return twiml('Nothing recent to mark done. Say what you did — "did the trash".');
   }
 
   /* ---- a correction to whatever just happened? ---------------------------

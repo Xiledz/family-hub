@@ -8,13 +8,21 @@
  * iOS refreshes subscribed calendars on its own schedule (up to ~1 hour), so
  * this is a convenience layer. The push reminders are the real alert path.
  *
+ * One VEVENT per OCCURRENCE, expanded by feed_occurrences() in SQL (022) —
+ * the same predicate the reminders and the digest use. No RRULE: iOS would
+ * then apply its own recurrence rules and disagree with the app about a
+ * skipped or moved Tuesday. Skips are absent; done occurrences get a "✓".
+ *
  * URL: https://<ref>.supabase.co/functions/v1/ics-feed?h=<household-id>&t=<FEED_TOKEN>
  *
  * AUTH: iOS cannot send an Authorization header when subscribing to a calendar
  * feed, so "Verify JWT" must be OFF on this function. The ?t= token is what
- * replaces it — it is checked below against the FEED_TOKEN secret. Without this
- * the feed would be readable by anyone who guessed the household id, which for
- * this household is a trivially guessable all-zeros UUID.
+ * replaces it. Since migration 021 the token lives on households.feed_token,
+ * so the app's Settings sheet can show the subscribe link; the FEED_TOKEN
+ * secret is still honoured as a fallback so nothing breaks between deploying
+ * this and running the migration. Without a token the feed would be readable
+ * by anyone who guessed the household id, which for this household is a
+ * trivially guessable all-zeros UUID.
  * ==========================================================================*/
 /* ---------------------------------------------------------------------------
  * Supabase admin client. Inlined rather than imported from a shared file so
@@ -36,29 +44,48 @@ const cors = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type'
 };
 
+const BUILD = '2026-09-11c-m1';
 const FEED_TOKEN = Deno.env.get('FEED_TOKEN') ?? '';
+
+/* Constant-time-ish equality. */
+const same = (a: string, b: string) =>
+  !!a && !!b && a.length === b.length && [...a].every((c, i) => c === b[i]);
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
   const household = url.searchParams.get('h');
-  if (!household) return new Response('missing ?h=', { status: 400 });
-
-  // Constant-time-ish check. Deliberately returns 404, not 401, so a wrong
-  // token is indistinguishable from a feed that does not exist.
-  const t = url.searchParams.get('t') ?? '';
-  if (!FEED_TOKEN || t.length !== FEED_TOKEN.length ||
-      ![...t].every((c, i) => c === FEED_TOKEN[i])) {
-    return new Response('not found', { status: 404 });
-  }
+  if (!household) return new Response('missing ?h=', { status: 400, headers: { 'x-build': BUILD } });
 
   const db = admin();
-  const { data: hh } = await db.from('households').select('name,timezone').eq('id', household).single();
-  if (!hh) return new Response('not found', { status: 404 });
+  /* select('*'), not the column by name: naming feed_token before migration
+     021 has run would make the whole select fail and 404 every subscriber. */
+  const { data: hh } = await db.from('households')
+    .select('*').eq('id', household).maybeSingle();
 
-  const from = new Date(); from.setMonth(from.getMonth() - 2);
-  const { data: evs } = await db.from('events')
-    .select('*, members(name)').eq('household_id', household).is('deleted_at', null)
-    .or(`event_date.gte.${from.toISOString().slice(0,10)},starts_at.gte.${from.toISOString()}`);
+  // The household's own token first; the env secret as the fallback. A wrong
+  // token deliberately returns 404, not 401, so it is indistinguishable from
+  // a feed that does not exist.
+  const t = url.searchParams.get('t') ?? '';
+  const ok = !!hh && (same(t, String((hh as any).feed_token ?? '')) || same(t, FEED_TOKEN));
+  if (!ok) return new Response('not found', { status: 404, headers: { 'x-build': BUILD } });
+
+  /* Expansion is the database's job — feed_occurrences (022) walks the
+     window over the same occurrences_on() the digest and the reminders use,
+     so a Tuesday is a Tuesday in all three. Skips are simply absent,
+     overrides carry their moved time, done occurrences arrive flagged.
+     60 days back so a grandparent can scroll to last month; 400 forward
+     covers a school year. */
+  const day = 86_400_000;
+  const from = new Date(Date.now() - 60 * day).toISOString().slice(0, 10);
+  const to   = new Date(Date.now() + 400 * day).toISOString().slice(0, 10);
+  const { data: occ, error } = await db.rpc('feed_occurrences',
+    { p_household: household, p_from: from, p_to: to });
+  if (error) {
+    /* Never swallow this again: the feed was an empty calendar for weeks
+       because a refused query looked exactly like a quiet month. */
+    console.log(`ics-feed build=${BUILD} feed_occurrences failed: ${error.message}`);
+    return new Response('feed error', { status: 500, headers: { 'x-build': BUILD } });
+  }
 
   const L = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Family Hub//EN', 'CALSCALE:GREGORIAN',
@@ -66,27 +93,33 @@ Deno.serve(async (req) => {
     'REFRESH-INTERVAL;VALUE=DURATION:PT30M', 'X-PUBLISHED-TTL:PT30M'
   ];
 
-  for (const e of evs ?? []) {
-    L.push('BEGIN:VEVENT', `UID:${e.id}@familyhub`, `DTSTAMP:${z(new Date(e.created_at))}`);
-    if (e.all_day) {
-      const d = e.event_date.replace(/-/g, '');
-      const nx = new Date(e.event_date + 'T00:00:00'); nx.setDate(nx.getDate() + 1);
+  const stamp = z(new Date());
+  for (const o of occ ?? []) {
+    /* One VEVENT per OCCURRENCE. The UID carries the date so a series is
+       many entries, each of which iOS can show, hide or mark on its own. */
+    L.push('BEGIN:VEVENT', `UID:${o.event_id}-${o.occurrence_date}@familyhub`, `DTSTAMP:${stamp}`);
+    if (o.all_day) {
+      const d  = String(o.occurrence_date).replace(/-/g, '');
+      const nx = new Date(o.occurrence_date + 'T00:00:00Z'); nx.setUTCDate(nx.getUTCDate() + 1);
       L.push(`DTSTART;VALUE=DATE:${d}`,
-             `DTEND;VALUE=DATE:${nx.toISOString().slice(0,10).replace(/-/g,'')}`);
+             `DTEND;VALUE=DATE:${nx.toISOString().slice(0, 10).replace(/-/g, '')}`);
     } else {
-      L.push(`DTSTART:${z(new Date(e.starts_at))}`,
-             `DTEND:${z(new Date(e.ends_at ?? new Date(new Date(e.starts_at).getTime() + 36e5)))}`);
+      const st = new Date(o.starts_at);
+      const en = o.ends_at ? new Date(o.ends_at) : new Date(st.getTime() + 36e5);
+      L.push(`DTSTART:${z(st)}`, `DTEND:${z(en)}`);
     }
-    const who = e.members?.name ?? 'Everyone';
-    L.push(`SUMMARY:${esc(e.title)} (${esc(who)})`);
-    if (e.location) L.push(`LOCATION:${esc(e.location)}`);
-    if (e.notes)    L.push(`DESCRIPTION:${esc(e.notes)}`);
+    const who = o.people ? ` (${o.people})` : '';
+    L.push(`SUMMARY:${o.done ? '✓ ' : ''}${esc(o.title)}${esc(who)}`);
+    if (o.location) L.push(`LOCATION:${esc(o.location)}`);
+    if (o.notes)    L.push(`DESCRIPTION:${esc(o.notes)}`);
     L.push('END:VEVENT');
   }
   L.push('END:VCALENDAR');
+  console.log(`ics-feed build=${BUILD} occurrences=${occ?.length ?? 0} window=${from}..${to}`);
 
   return new Response(L.map(fold).join('\r\n') + '\r\n', {
     headers: {
+      'x-build': BUILD,
       'Content-Type': 'text/calendar; charset=utf-8',
       'Content-Disposition': 'inline; filename="family.ics"',
       'Cache-Control': 'public, max-age=300'

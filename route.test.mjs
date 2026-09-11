@@ -258,6 +258,91 @@ order('need to leave for the airport Friday 6am',  'event');
 order('tell Bryce to clean his room',              'todo');
 order('remind me to call the dentist',             'todo');
 
+/* --- NAME + CHORE VERB ----------------------------------------------------
+   "Bryce take out the trash every Tuesday" is THE chore, and it was becoming
+   a weekly calendar event on Bryce's Tuesdays plus a rides question, because
+   the chore-verb test was anchored at the start of the sentence and the name
+   sat in front of it. The names are now looked past — with the same
+   leadingNames() that parseTodo uses to assign it. These are not diverted:
+   they resolve at the tail, as a todo, first time. */
+order('Bryce take out the trash every Tuesday',   'todo');
+order('Addie clean your room',                    'todo');
+order('Bryce and Addie unload the dishwasher tonight', 'todo');
+order('Bryce, clean your room',                   'todo');
+/* Chore verb + clock is still a chore with a preferred hour. */
+order('Bryce take out the trash at 7',            'todo');
+order('Bryce take out the trash Tuesday morning at 7', 'todo');
+/* Name + calendar noun + clock stays an event. "practice" is not a chore
+   verb, and neither are the compounds that merely START with one. */
+order('Bryce soccer practice Tuesday at 5',       'event');
+order('Bryce dentist Tuesday 3pm',                'event');
+order('Bryce practice piano Tuesday at 5',        'event');
+order('Jess book club Tuesday 7pm',               'event');
+order('Addie study group Thursday 4pm',           'event');
+order('Bryce check up Tuesday 3pm',               'event');
+/* "needs cleats" is not "needs to"; cleats are not a grocery. Asked, never
+   filed as an event on Bryce's calendar. */
+order('Bryce needs cleats',                       'ask');
+order('Addie recital',                            'ask');
+
+/* --- QUESTIONS ------------------------------------------------------------
+   Answered, never filed. "anything Thursday?" was becoming a calendar event
+   titled "anything". These resolve at stage 0, before any matcher that can
+   write a row, and need no pending question. */
+const asks = (body, want) => {
+  const r = routeIntent(body, { stores: STORES, members: ROSTER, now: NOW, me: 'Erich' });
+  const got = r.intent + (r.date ? ` ${r.date}` : '') + (r.who ? ` ${r.who}` : '')
+            + (r.item ? ` "${r.item}"` : '') + (r.offerTitle ? ` +${r.offerTitle}` : '');
+  const ok = got === want;
+  console.log((ok ? 'PASS  ' : 'FAIL  ') + `ask ${JSON.stringify(body)}`);
+  if (!ok) { console.log(`      got  "${got}"\n      want "${want}"`); fail++; } else pass++;
+};
+asks('anything thursday?',            'ask_day 2026-09-17');
+asks('anything thursday',             'ask_day 2026-09-17');     // no "?" needed
+asks("what's today",                  'ask_day 2026-09-10');
+asks("what's tomorrow",               'ask_day 2026-09-11');
+asks('whats on saturday',             'ask_day 2026-09-12');
+asks('what do we have friday',        'ask_day 2026-09-11');
+asks("what's up?",                    'ask_day 2026-09-10');
+asks('anything for Addie thursday?',  'ask_day 2026-09-17 Addie');
+asks("who's driving Addie Monday",    'ask_driver 2026-09-14 Addie');
+asks('who has Bryce Tuesday',         'ask_driver 2026-09-15 Bryce');
+asks("who's picking up Addie",        'ask_driver 2026-09-10 Addie');   // today
+asks("who's driving Addie to practice Thursday", 'ask_driver 2026-09-17 Addie');
+asks("what's for dinner",             'ask_dinner 2026-09-10');
+asks('dinner tonight?',               'ask_dinner 2026-09-10');
+asks("what's dinner tomorrow",        'ask_dinner 2026-09-11');
+asks('did Jess get the milk',         'ask_got Jess "milk"');
+asks('did anyone get eggs',           'ask_got "eggs"');
+asks('do we have milk',               'ask_got "milk"');
+asks('has mom picked up the dry cleaning', 'ask_got Jess "dry cleaning"');
+/* Title + day + "?" is ambiguous: answer the day, offer the add. */
+asks('Dentist Thursday?',             'ask_day 2026-09-17 +Dentist');
+asks('is there soccer saturday?',     'ask_day 2026-09-12');
+/* Anything else ending in "?" is told what can be answered — never filed. */
+asks('milk?',                         'ask_help');
+asks('Addie recital?',                'ask_help');
+/* Must NOT be questions. */
+order("what's on the list",           'show');
+order("what's on the costco list",    'show:Costco');
+order("Bryce's list",                 'todo_show');
+order('dinner is leftovers',          'ask');       // a statement, not a question (M1 #8 owns it)
+order('schedule the dentist',         'todo');
+order('did the dishes',               'todo_done');
+order('got milk',                     'got');
+order('buy milk?',                    'shop');
+order('Soccer Thursday 6pm',          'event');
+
+/* --- PASTED BLOCKS ----------------------------------------------------------
+   A schedule (≥3 lines, ≥2 dated) resolves at stage 0 as one 'season' —
+   after the list commands, before the questions and the tails. A pasted
+   grocery list with no dates goes to shopping in one go. Three questions
+   on three lines are still a question, not a schedule. */
+order('Orchestra — Addie\n9/15 6pm\n9/22 6pm\n9/29 6pm', 'season');
+order('milk\neggs\nbananas',                              'shop');
+order('anything thursday?\nanything friday?\nanything saturday?', 'ask_day');
+order('9/15 6pm\n9/22 6pm',                               'event');   // two lines: not a season
+
 /* Plain messages are not diverted at all. */
 order('buy milk',            'shop');
 order('remove milk',         'remove');

@@ -3,7 +3,8 @@
  * No build step. Native ES modules, loaded straight from GitHub Pages.
  * ==========================================================================*/
 import { CONFIG, isDemo } from './config.js';
-import { parseQuickAdd, describe, parseShopping, parseTodo, parseIngredient, splitIngredientBlock } from './parse.js';
+import { parseQuickAdd, describe, parseShopping, parseTodo, parseIngredient, splitIngredientBlock,
+         parseSeason, looksLikeSeason, splitSeasonLines } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
 
 const $  = s => document.querySelector(s);
@@ -25,7 +26,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-11b';
+const APP_BUILD = '2026-09-11e';
 
 const state = {
   db: null, demo: isDemo(),
@@ -150,6 +151,7 @@ const DB = {
       repeat_days: e.repeat_days ?? [],
       repeat_until: e.repeat_until ?? null,
       reminder_lead_minutes: e.lead_minutes ?? null,
+      location: e.location || null,
       created_by: state.me?.id || null, source: e.source || 'web'
     };
     const q = e.id
@@ -960,10 +962,12 @@ const TODO = {
     const t = (state.todos || []).find(x => x.id === id); if (!t) return;
     const done = !t.completed_at;
     t.completed_at = done ? new Date().toISOString() : null;   // optimistic
+    if (!done) t.missed_at = null;   // re-opened by hand: no longer "missed"
     render();
     await state.db.from('todos').update({
       completed_at: t.completed_at,
-      completed_by: done ? (state.me?.id || null) : null
+      completed_by: done ? (state.me?.id || null) : null,
+      ...(done ? {} : { missed_at: null })
     }).eq('id', id);
     /* A repeating todo spawns its successor in a trigger, so the list has to
        come back from the server to see it. */
@@ -1061,12 +1065,17 @@ function renderTodos(){
       .toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})}${hhmm(t)}</span>`;
   };
 
+  /* A recurring chore closed by the DATE rather than by a person — its next
+     occurrence came due while it was still open. It sits in Done with a red
+     badge instead of a tick, so a missed week is visible and "Clear done"
+     sweeps it like anything else. */
   const item = t => `
     <li class="todo${t.completed_at ? ' done' : ''}" data-id="${t.id}">
       <span class="grip" data-grip aria-hidden="true">⋮⋮</span>
-      <button class="tick" data-tick="${t.id}" aria-label="Done">${t.completed_at ? '✓' : ''}</button>
+      <button class="tick" data-tick="${t.id}" aria-label="Done">${t.completed_at ? (t.missed_at ? '✕' : '✓') : ''}</button>
       <span class="tt">${esc(t.title)}${t.assignee_id === null
-        ? ' <span class="tbadge shared">Shared</span>' : ''}${badge(t)}
+        ? ' <span class="tbadge shared">Shared</span>' : ''}${t.missed_at
+        ? ' <span class="tbadge late">Missed</span>' : badge(t)}
         ${t.repeat_freq ? '<span class="tbadge rep">repeats</span>' : ''}</span>
       <button class="tx" data-del="${t.id}" aria-label="Remove">×</button>
     </li>`;
@@ -1293,20 +1302,46 @@ const MEAL = {
   },
 
   /* ---- planning --------------------------------------------------------- */
+  /* Who cooks when nobody says: the household default (Jess), then whoever
+     is planning. The planner used to be the cook automatically, which put
+     the thaw alert on the person at a desk instead of the person in the
+     kitchen. materialize_meal_reminders applies the same fallback. */
+  defaultCook(){
+    return state.household?.default_cook_id || state.me?.id || null;
+  },
+
   async plan(date, recipeId, opts = {}){
-    const rec = state.recipes.find(r => r.id === recipeId);
     const row = {
       household_id: CONFIG.HOUSEHOLD_ID, plan_date: date, slot: 'dinner',
       recipe_id: recipeId || null, freeform: recipeId ? null : (opts.freeform || 'Dinner'),
       servings: opts.servings ?? (state.household?.default_servings ?? 4),
-      ready_by: opts.ready_by || null, cook_id: state.me?.id || null,
+      ready_by: opts.ready_by || null,
+      cook_id: opts.cook_id !== undefined ? opts.cook_id : MEAL.defaultCook(),
       created_by: state.me?.id || null
     };
-    const { data, error } = await state.db.from('meal_plan')
-      .upsert(row, { onConflict: 'household_id,plan_date,slot' }).select('id').single();
+    /* One dinner per day is a PARTIAL unique index (deleted_at is null), and
+       ON CONFLICT cannot infer a partial index without its predicate — so
+       an upsert on those columns is refused by Postgres. Find, then update
+       or insert. */
+    const existing = state.meals.find(m => m.plan_date === date && m.slot === 'dinner' && !m.deleted_at);
+    let data, error;
+    if (existing) {
+      ({ data, error } = await state.db.from('meal_plan').update(row).eq('id', existing.id).select('id').single());
+    } else {
+      ({ data, error } = await state.db.from('meal_plan').insert(row).select('id').single());
+    }
     if (error) { console.error(error); toast('Could not plan that'); return null; }
     await MEAL.load(); render();
     return data.id;
+  },
+
+  /* Change the cook on a planned meal. The meal_resync trigger rebuilds the
+     countdown for the new person, so nothing else needs doing here. */
+  async setCook(id, memberId){
+    const { error } = await state.db.from('meal_plan')
+      .update({ cook_id: memberId || null }).eq('id', id);
+    if (error) { console.error(error); toast('Could not change the cook'); return; }
+    await MEAL.load();
   },
 
   async unplan(id){
@@ -1580,6 +1615,22 @@ function openRecipeSheet(id){
 
 /* Pick a recipe (or type "pizza night"), a day, how many, and when it needs
    to be on the table. That is the whole form. */
+/* One chip per person; the pressed one cooks. Shared by the plan sheet and
+   the meal sheet so the two never disagree about what a cook picker is. */
+function cookChips(selectedId){
+  return `<div class="chips" data-cooks>${state.members.map(m =>
+    `<button type="button" class="chip" data-cook="${m.id}" aria-pressed="${selectedId === m.id}">
+       <span class="dot" style="background:${m.color}"></span>${esc(m.name)}</button>`).join('')}</div>`;
+}
+function bindCookChips(body, onPick){
+  body.querySelectorAll('[data-cook]').forEach(c => c.onclick = () => {
+    body.querySelectorAll('[data-cook]').forEach(x => x.setAttribute('aria-pressed', 'false'));
+    c.setAttribute('aria-pressed', 'true');
+    if (onPick) onPick(c.dataset.cook);
+  });
+}
+const pickedCook = body => body.querySelector('[data-cook][aria-pressed="true"]')?.dataset.cook || null;
+
 function openPlanSheet(date, recipeId = null){
   const opts = state.recipes.map(r => `<option value="${r.id}"${r.id === recipeId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
   const html = `
@@ -1591,17 +1642,20 @@ function openPlanSheet(date, recipeId = null){
       <div class="f"><label>For how many</label><input id="p-serv" type="number" min="1" value="${state.household?.default_servings ?? 4}"></div>
       <div class="f"><label>On the table by</label><input id="p-ready" type="time" value="${state.household?.default_dinner_at?.slice(0,5) ?? '18:00'}"></div>
     </div>
-    <p class="hint">Set the time and the countdown works backwards from it: cooking starts <i>cook time</i> before, and each prep step before that.</p>
+    <div class="f"><label>Cook</label>${cookChips(MEAL.defaultCook())}</div>
+    <p class="hint">The countdown — thaw, preheat, start cooking — goes to the cook. Set the time and it works backwards from it.</p>
     <div class="actions"><button type="button" id="p-go" class="primary">Plan dinner</button></div>`;
   openMSheet('Plan dinner', html, body => {
     const sel = body.querySelector('#p-recipe'), free = body.querySelector('#p-free');
     sel.onchange = () => { free.style.display = sel.value ? 'none' : ''; };
+    bindCookChips(body);
     body.querySelector('#p-go').onclick = async () => {
       const rid = sel.value || null;
       const id = await MEAL.plan(body.querySelector('#p-date').value, rid, {
         freeform: free.value.trim() || 'Dinner',
         servings: +body.querySelector('#p-serv').value || null,
-        ready_by: body.querySelector('#p-ready').value || null
+        ready_by: body.querySelector('#p-ready').value || null,
+        cook_id: pickedCook(body)
       });
       closeMSheet();
       if (id && rid) openMealSheet(id);          // straight to have/need
@@ -1629,12 +1683,17 @@ async function openMealSheet(id){
   }).join('');
 
   const when = x => new Date(x).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' });
+  /* The cook as the server resolves it: the meal's, else the house default,
+     else the planner. Shown so "who's got dinner" has an answer on the card. */
+  const cookId = m.cook_id || MEAL.defaultCook() || m.created_by || null;
+  const cook = state.members.find(x => x.id === cookId);
   const html = `
     <p class="rmeta">${new Date(m.plan_date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'})}
       ${m.ready_by ? ` · on the table by ${clock12(m.ready_by)}` : ''}${m.servings ? ` · for ${m.servings}` : ''}
-      ${factor !== 1 ? ` · <b>×${fmtQty(factor)}</b>` : ''}</p>
+      ${factor !== 1 ? ` · <b>×${fmtQty(factor)}</b>` : ''}${cook ? ` · ${esc(cook.name)} cooks` : ''}</p>
     ${r ? `<h3>Need to buy <small>— tick what you don't have</small></h3><div class="hnlist">${rows}</div>
            <div class="actions"><button type="button" id="m-push" class="primary">Add checked to shopping list</button></div>` : ''}
+    ${r ? `<h3>Cook <small>— the countdown goes to them</small></h3>${cookChips(cookId)}` : ''}
     ${rem?.length ? `<h3>Countdown</h3><ul class="ring">${rem.map(x => `<li${x.sent_at ? ' class="sent"' : ''}>${when(x.fire_at)} — ${esc(x.label || 'Start cooking')}</li>`).join('')}</ul>` : ''}
     ${r?.instructions?.length ? `<h3>Directions</h3><ol class="rins">${r.instructions.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
     <div class="actions">
@@ -1660,6 +1719,12 @@ async function openMealSheet(id){
     });
     body.querySelector('#m-unplan').onclick = () => { if (confirm('Un-plan this dinner? Un-bought items come off the list too.')) { MEAL.unplan(id); closeMSheet(); } };
     const rb = body.querySelector('#m-recipe'); if (rb) rb.onclick = () => openRecipeSheet(r.id);
+    /* Changing the cook moves the countdown (trigger); reopen so it shows. */
+    bindCookChips(body, async memberId => {
+      await MEAL.setCook(id, memberId);
+      toast(`Cook: ${state.members.find(x => x.id === memberId)?.name || '—'}`);
+      openMealSheet(id);
+    });
   });
 }
 
@@ -1730,6 +1795,83 @@ qaIn.addEventListener('input', () => {
   if (!qaIn.value.trim()) { $('#qa-prev').innerHTML = ''; state.parsed = null; }
 });
 $('#qa-form').addEventListener('submit', e => { e.preventDefault(); preview(); });
+
+/* A PASTED SCHEDULE. The quick-add box is a single line and would flatten
+   the newlines, so the paste itself is read: twenty dated lines under a
+   header become one confirm sheet (openSeasonSheet), never twenty typed
+   events. A pasted grocery list with no dates goes straight to the shopping
+   list through SHOP.add, which already splits on newlines. Anything else
+   pastes normally. */
+qaIn.addEventListener('paste', e => {
+  const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+  if (splitSeasonLines(text).length < 3) return;
+  const opts = { members: state.members.map(m => ({ name: m.name, aliases: m.aliases || [] })),
+                 now: new Date(), me: state.me?.name };
+  if (looksLikeSeason(text, opts)) {
+    e.preventDefault();
+    openSeasonSheet(parseSeason(text, opts));
+    return;
+  }
+  const probe = parseShopping(text, { stores: state.stores, catalog: state.shopCatalog });
+  const known = probe.items.filter(i => i.category !== 'other').length;
+  if (probe.items.length >= 3 && known * 2 >= probe.items.length) {
+    e.preventDefault();
+    SHOP.add(text).then(() => { toast(`Added to the shopping list`); });
+  }
+});
+
+/* One confirm, many rows. Header: title, who, roles. Then every line with a
+   tick — lines that could not be dated are shown unticked and greyed with
+   their raw text, never guessed. Rows are one-off events (a schedule is
+   irregular; that is why it was pasted), cast from the header, and no
+   rides question follows: the header answered it once for all of them. */
+function openSeasonSheet(season){
+  const roleWord = { going: '', driving: 'drives', dropoff: 'takes', pickup: 'picks up', helping: 'helps', optional: 'maybe' };
+  const who = (season.people || []).map(p =>
+    `<span class="chip" aria-pressed="true" style="pointer-events:none">${esc(p.name)}${roleWord[p.role] ? ` · ${roleWord[p.role]}` : ''}</span>`).join(' ');
+  const when = r => r.allDay ? 'All day'
+    : `${clockLabel(r.start)}${r.end ? `–${clockLabel(r.end)}` : ''}`;
+  const rows = season.rows.map((r, i) => r.ok
+    ? `<label class="hn"><input type="checkbox" data-row="${i}" checked>
+         <span class="hnname"><b>${esc(dayLabel(r.date))}</b> ${esc(when(r))}<br>${esc(r.title)}${r.location ? ` <small>@ ${esc(r.location)}</small>` : ''}${r.people?.length && r.people !== season.people ? ` <small>${esc(r.people.map(p => p.name).join(', '))}</small>` : ''}</span></label>`
+    : `<label class="hn" style="opacity:.55"><input type="checkbox" data-row="${i}" disabled>
+         <span class="hnname">${esc(r.raw)}<br><small>couldn't read a date — add it by hand</small></span></label>`).join('');
+  const okCount = season.rows.filter(r => r.ok).length;
+  const html = `
+    <div class="f"><label>What</label><input id="s-title" value="${esc(season.title || '')}" placeholder="e.g. Orchestra rehearsals"></div>
+    ${who ? `<div class="f"><label>Who</label><div class="chips">${who}</div></div>` : `<p class="hint">Nobody named — put "Addie, Jess driving" on the first line to set the cast for every row.</p>`}
+    <div class="hnlist">${rows}</div>
+    <div class="actions"><button type="button" id="s-go" class="primary">Add ${okCount}</button></div>`;
+  openMSheet('Add a schedule', html, body => {
+    const recount = () => {
+      const n = body.querySelectorAll('[data-row]:checked').length;
+      body.querySelector('#s-go').textContent = `Add ${n}`;
+      body.querySelector('#s-go').disabled = n === 0;
+    };
+    body.querySelectorAll('[data-row]').forEach(cb => cb.onchange = recount);
+    body.querySelector('#s-go').onclick = async () => {
+      const title = body.querySelector('#s-title').value.trim();
+      const picked = [...body.querySelectorAll('[data-row]:checked')].map(cb => season.rows[+cb.dataset.row]);
+      body.querySelector('#s-go').disabled = true;
+      let added = 0, failed = 0;
+      for (const r of picked) {
+        /* If the header title was edited on the sheet, rows that carried it
+           down follow the edit; rows with their own words keep them. */
+        const t = (season.title && r.title.startsWith(season.title) && title)
+          ? title + r.title.slice(season.title.length) : (r.title || title || 'Untitled');
+        const p = { title: t, allDay: r.allDay, date: r.date, start: r.start, end: r.end,
+                    member: (r.people.find(x => x.role === 'going') || r.people[0])?.name ?? null,
+                    people: r.people, leadMinutes: state.me?.default_lead_minutes ?? 30,
+                    repeat: null, matched: [] };
+        try { await DB.saveEvent({ ...parsedToEvent(p), source: 'season', location: r.location || null }); added++; }
+        catch (err) { console.error(err); failed++; }
+      }
+      closeMSheet(); clearQA(); render();
+      const skipped = season.rows.length - added;
+      toast(`Added ${added}${skipped ? ` · skipped ${skipped}` : ''}${failed ? ` · ${failed} failed` : ''}`);
+    };
+  });
+}
 
 /* The clock, said out loud. 12:00 is the number people misread most often,
    in both directions, so it never appears here without the word. */
@@ -2093,6 +2235,21 @@ function openSettings(){
     }
     toast('Default reminder saved');
   });
+
+  /* The read-only .ics feed for grandparents and sitters. The token lives on
+     the household row (migration 021) so the app can show the link; before
+     that row has one, the row stays hidden rather than showing a dead URL. */
+  const feedRow = $('#set-feed-row');
+  const token = state.household?.feed_token;
+  feedRow.hidden = !(token && !state.demo);
+  if (!feedRow.hidden) {
+    const url = `${CONFIG.SUPABASE_URL}/functions/v1/ics-feed?h=${CONFIG.HOUSEHOLD_ID}&t=${token}`;
+    $('#set-feed').value = url;
+    $('#set-feed-copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(url); toast('Link copied'); }
+      catch { $('#set-feed').select(); toast('Select the link and copy it'); }
+    };
+  }
   settings.classList.add('on');
 }
 function closeSettings(){ settings.classList.remove('on'); }
