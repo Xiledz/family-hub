@@ -1508,12 +1508,18 @@ function openConfirmSheet(rec, method, errMsg = null, existingId = null){
       <div class="f"><label>Cook time (min)</label><input id="c-cook" type="number" min="0" value="${rec.cook_minutes ?? 30}"></div>
     </div>
     <div class="f"><label>Ingredients — one per line</label>
-      <textarea id="c-ing" rows="8" placeholder="2 lbs ground beef&#10;1 packet taco seasoning&#10;8 tortillas">${esc(ingText)}</textarea></div>
+      <textarea id="c-ing" rows="8" placeholder="one ingredient per line">${esc(ingText)}</textarea></div>
     <div class="f"><label>Directions — one step per line</label>
-      <textarea id="c-ins" rows="6">${esc(insText)}</textarea></div>
-    <div class="f"><label>Countdown steps — <i>what</i> | <i>minutes before cooking</i></label>
-      <textarea id="c-steps" rows="3" placeholder="Take the beef out to thaw | 60&#10;Preheat the oven | 5">${esc(stepRows)}</textarea>
-      <p class="hint">Every step is measured from when cooking starts. Thaw for an hour = 60. Preheat = 5.</p></div>
+      <textarea id="c-ins" rows="6" placeholder="one step per line">${esc(insText)}</textarea></div>
+    <!-- Prep-ahead is the exception, not the rule. A snack has nothing to
+         thaw. So this is folded away unless the recipe already has steps or
+         someone opens it, and the example text was replaced: a grey
+         "Take the beef out to thaw" on a cookie recipe read as real data. -->
+    <details class="f" id="c-cd" ${stepRows ? 'open' : ''}>
+      <summary>Prep ahead <small>(optional — thaw, marinate, preheat)</small></summary>
+      <textarea id="c-steps" rows="3" placeholder="what to do  |  minutes before cooking starts">${esc(stepRows)}</textarea>
+      <p class="hint">One per line, as <b>what | minutes</b>. Leave empty if nothing needs doing ahead.</p>
+    </details>
     ${rec.source_url ? `<p class="hint">Source: <a href="${esc(rec.source_url)}" target="_blank" rel="noopener">${esc(rec.source_url.replace(/^https?:\/\//,'').slice(0,50))}</a></p>` : ''}
     <div class="actions">
       ${existingId ? `<button type="button" class="danger" id="c-del">Delete</button>` : ''}
