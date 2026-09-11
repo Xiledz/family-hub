@@ -394,10 +394,10 @@ button{cursor:pointer}
 .pchip.on{background:var(--c);border-color:var(--c);color:#fff}
 
 .tadd{display:flex;gap:8px;margin-bottom:14px}
-.tadd input{flex:1;min-width:0;border:1px solid var(--line);border-radius:10px;
-  padding:11px 12px;font:inherit;font-size:16px;background:var(--card);color:var(--ink)}
+.tadd input{flex:1;min-width:0;border:1.5px solid var(--line);border-radius:12px;
+  padding:12px 14px;font:inherit;font-size:16px;background:var(--bg);color:var(--ink)}
 .tadd button{border:0;border-radius:10px;padding:0 16px;font:inherit;font-weight:700;
-  background:var(--accent,#2563eb);color:#fff;cursor:pointer}
+  background:var(--accent);color:var(--bg);cursor:pointer}
 
 .todos{list-style:none;margin:0;padding:0}
 .todo{display:flex;align-items:center;gap:10px;padding:11px 2px;
@@ -409,21 +409,21 @@ button{cursor:pointer}
   border-radius:10px;padding-left:10px;padding-right:10px;opacity:.97}
 
 /* The handle. touch-action:none ONLY here. */
-.grip{flex:0 0 auto;width:28px;text-align:center;cursor:grab;color:var(--muted,#9aa0a6);
+.grip{flex:0 0 auto;width:28px;text-align:center;cursor:grab;color:var(--ink3);
   font-size:15px;letter-spacing:-2px;touch-action:none;
   -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 
-.tick{flex:0 0 auto;width:24px;height:24px;border-radius:7px;border:1.5px solid var(--line);
-  background:transparent;color:var(--accent,#2563eb);font-weight:800;font-size:14px;
+.tick{flex:0 0 auto;width:24px;height:24px;border-radius:7px;border:1.5px solid var(--ink3);
+  background:transparent;color:var(--bg);font-weight:800;font-size:14px;
   line-height:1;cursor:pointer;padding:0}
-.todo.done .tick{background:var(--accent,#2563eb);border-color:var(--accent,#2563eb);color:#fff}
+.todo.done .tick{background:var(--accent);border-color:transparent;color:var(--bg)}
 
 .tt{flex:1;min-width:0;font-size:15px;line-height:1.35;word-break:break-word}
-.tx{flex:0 0 auto;border:0;background:transparent;color:var(--muted,#9aa0a6);
+.tx{flex:0 0 auto;border:0;background:transparent;color:var(--ink3);
   font-size:19px;line-height:1;cursor:pointer;padding:2px 4px}
 
 .tbadge{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:999px;
-  font-size:11px;font-weight:700;background:var(--chip,#eceff3);color:var(--muted,#5f6368);
+  font-size:11px;font-weight:700;background:var(--soft);color:var(--ink2);border:1px solid var(--line);
   vertical-align:1px}
 .tbadge.late{background:#fdecec;color:#b3261e}
 .tbadge.today{background:#e6f0fe;color:#1a56db}
@@ -431,10 +431,10 @@ button{cursor:pointer}
 .tbadge.rep{background:#f3edfb;color:#6b3fa0}
 
 .tdone{display:flex;justify-content:space-between;align-items:center;
-  margin:18px 0 4px;font-size:13px;color:var(--muted,#5f6368)}
-.link{border:0;background:transparent;color:var(--accent,#2563eb);
+  margin:18px 0 4px;font-size:13px;color:var(--ink2)}
+.link{border:0;background:transparent;color:var(--accent);
   font:inherit;font-weight:600;cursor:pointer;padding:0}
-.hint{font-size:12px;color:var(--muted,#9aa0a6);margin:10px 2px 0}
+.hint{font-size:12px;color:var(--ink3);margin:10px 2px 0}
 
 @media (prefers-color-scheme:dark){
   .tbadge.late{background:#3a1f1e;color:#f2b8b5}
@@ -457,36 +457,41 @@ button{cursor:pointer}
  * ======================================================================== */
 .mday{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line)}
 .mday:last-child{border-bottom:0}
-.mday.today .mdate{color:var(--accent,#2563eb);font-weight:800}
-.mdate{flex:0 0 96px;font-size:13px;color:var(--muted,#5f6368)}
+.mday.today .mdate{color:var(--accent);font-weight:800}
+.mdate{flex:0 0 96px;font-size:13px;color:var(--ink2)}
 .mname{flex:1;min-width:0;text-align:left;border:0;background:transparent;color:inherit;
   font:inherit;font-weight:600;font-size:15px;cursor:pointer;padding:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mname small{font-weight:500;color:var(--muted,#5f6368)}
+.mname small{font-weight:500;color:var(--ink2)}
 .mday.mdone .mname{opacity:.5;text-decoration:line-through}
-.mplan{flex:1;text-align:left;border:1px dashed var(--line);background:transparent;
-  color:var(--muted,#9aa0a6);font:inherit;font-size:13px;border-radius:8px;padding:5px 10px;cursor:pointer}
+.mplan{flex:1;text-align:left;border:1.5px dashed var(--ink3);background:transparent;
+  color:var(--ink2);font:inherit;font-size:13px;font-weight:600;border-radius:8px;padding:6px 10px;cursor:pointer}
 
 .rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:12px}
 .rcard{display:flex;flex-direction:column;align-items:stretch;text-align:left;border:1px solid var(--line);
   background:var(--card);border-radius:12px;overflow:hidden;padding:0;cursor:pointer;color:inherit;font:inherit}
-.rcard img,.rimg{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--chip,#eceff3)}
+.rcard img,.rimg{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--soft)}
 .rname{padding:8px 10px 2px;font-weight:700;font-size:14px;line-height:1.25}
-.rmeta{padding:0 10px 10px;font-size:12px;color:var(--muted,#5f6368)}
+.rmeta{padding:0 10px 10px;font-size:12px;color:var(--ink2)}
 .rhero{width:100%;max-height:220px;object-fit:cover;border-radius:10px;margin-bottom:8px}
 .ring,.rins{padding-left:20px;margin:6px 0 14px;line-height:1.5;font-size:15px}
 .ring li.sent{opacity:.45;text-decoration:line-through}
-#msheet-body h3{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#5f6368);margin:16px 0 6px}
+#msheet-body h3{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink2);margin:16px 0 6px}
 #msheet-body h3 small{text-transform:none;letter-spacing:0;font-weight:500}
 #msheet-body .frow{display:flex;gap:10px}
 #msheet-body .frow .f{flex:1;min-width:0}
-#msheet-body textarea{width:100%;font:inherit;font-size:15px;border:1px solid var(--line);border-radius:10px;
-  padding:9px 11px;background:var(--card);color:var(--ink);resize:vertical}
+#msheet-body textarea,#msheet-body input,#msheet-body select{width:100%;font:inherit;font-size:16px;
+  border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--bg);color:var(--ink)}
+#msheet-body textarea{resize:vertical}
+#msheet-body input:focus,#msheet-body textarea:focus,#msheet-body select:focus{outline:0;border-color:var(--ink2)}
 #msheet-body .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
-#msheet-body .actions button{font:inherit;font-weight:700;border-radius:10px;padding:10px 16px;cursor:pointer;
-  border:1px solid var(--line);background:var(--card);color:var(--ink)}
-#msheet-body .actions .primary{background:var(--accent,#2563eb);border-color:var(--accent,#2563eb);color:#fff}
-#msheet-body .actions .danger{color:#b3261e;border-color:#f0c9c6;margin-right:auto}
+#msheet-body .actions button{font:inherit;font-weight:700;font-size:15px;border-radius:12px;padding:13px 18px;
+  cursor:pointer;border:1.5px solid var(--ink3);background:transparent;color:var(--ink)}
+/* Primary is ink-on-paper, inverted — the same convention as every other
+   primary control in the app. Hard-coding white text broke in dark mode,
+   where the ink is near-white too. */
+#msheet-body .actions .primary{background:var(--accent);border-color:transparent;color:var(--bg)}
+#msheet-body .actions .danger{color:var(--warnink);border-color:var(--warnink);margin-right:auto}
 #msheet-body .warn{background:var(--warnbg,#fff4e5);color:var(--warnink,#8a5a00);padding:8px 10px;border-radius:8px;font-size:13px}
 
 .hnlist{display:flex;flex-direction:column}
@@ -494,11 +499,11 @@ button{cursor:pointer}
 .hn:last-child{border-bottom:0}
 .hn input{width:20px;height:20px;flex:0 0 auto}
 .hnname{flex:1;min-width:0;font-size:15px}
-.hnwhy{font-size:11px;color:var(--muted,#9aa0a6);white-space:nowrap}
+.hnwhy{font-size:11px;color:var(--ink3);white-space:nowrap}
 .staple{flex:0 0 auto;border:0;background:transparent;color:var(--line);font-size:18px;cursor:pointer;padding:0 2px}
 .staple.on{color:#e0a800}
 #msheet-body details.f summary{cursor:pointer;font-weight:600;font-size:14px;padding:6px 0;list-style:none;display:flex;align-items:center;gap:6px}
-#msheet-body details.f summary::before{content:'▸';font-size:12px;color:var(--muted,#9aa0a6)}
+#msheet-body details.f summary::before{content:'▸';font-size:12px;color:var(--ink3)}
 #msheet-body details.f[open] summary::before{content:'▾'}
-#msheet-body details.f summary small{font-weight:500;color:var(--muted,#5f6368)}
+#msheet-body details.f summary small{font-weight:500;color:var(--ink2)}
 #msheet-body details.f textarea{margin-top:6px}
