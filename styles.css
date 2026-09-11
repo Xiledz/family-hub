@@ -507,3 +507,11 @@ button{cursor:pointer}
 #msheet-body details.f[open] summary::before{content:'▾'}
 #msheet-body details.f summary small{font-weight:500;color:var(--ink2)}
 #msheet-body details.f textarea{margin-top:6px}
+
+/* Build stamp: bottom-right, above the tab bar, out of the way. */
+/* Above the tab bar in BOTH senses: higher on screen, and a higher z-index.
+   The first version sat at the bar's top edge with z-index 5 under the
+   bar's 60, so the bar drew over it and nobody could see it. */
+.ver{position:fixed;right:12px;bottom:calc(78px + var(--safe-b));font-size:11px;color:var(--ink2);
+  background:var(--card);border:1px solid var(--line);border-radius:999px;padding:2px 8px;
+  pointer-events:none;z-index:70;font-variant-numeric:tabular-nums;box-shadow:var(--shadow)}

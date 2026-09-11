@@ -1,6 +1,6 @@
 /* Family Hub service worker.
    Two jobs: keep the app shell available offline, and receive push. */
-const CACHE = 'familyhub-v3';
+const CACHE = 'familyhub-v4';
 const SHELL = ['./','./index.html','./styles.css','./app.js','./parse.js','./recur.js','./config.js','./manifest.webmanifest'];
 
 self.addEventListener('install', e => {
@@ -26,8 +26,15 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
   if (url.origin !== location.origin) return;
+  /* cache:'no-cache' is what makes "network first" actually mean network.
+     Without it the fetch goes through the browser's own HTTP cache, and
+     GitHub Pages sends max-age=600 — so for ten minutes after any load, a
+     "network" fetch quietly returned the old file, and a phone that opened
+     the app right after a push stayed on the previous build. With it the
+     browser revalidates against the server (ETag), which is one tiny
+     conditional request per file and returns 304 when nothing changed. */
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         if (res && res.ok) {
           const copy = res.clone();

@@ -25,6 +25,8 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
+const APP_BUILD = '2026-09-11b';
+
 const state = {
   db: null, demo: isDemo(),
   household: null, members: [], events: [], exceptions: [], me: null,
@@ -425,6 +427,7 @@ function render(){
   const hr = now.getHours();
   $('#hello').firstChild.textContent = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
   $('#hello-sub').textContent = now.toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
+  const ver = $('#ver'); if (ver) ver.textContent = 'v' + APP_BUILD;
 
   if (state.module === 'shopping') { $('#viewbar').classList.add('hide'); return renderShopping(); }
   if (state.module === 'todos')    { $('#viewbar').classList.add('hide'); return renderTodos(); }
