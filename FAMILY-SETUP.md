@@ -66,9 +66,13 @@ Text the family number: **`(936) 297-5103`**
 | Answer a reminder | reply `DID` |
 | What's happening | `what's Thursday` — or `anything tomorrow?` |
 | Who's driving | `who's driving Addie Monday` |
-| Dinner | `what's for dinner` |
+| Dinner | `what's for dinner` — or set it: `dinner is leftovers`, `we're having tacos` |
 | Did someone buy it | `did Jess get the milk` |
 | A whole schedule | paste it, one date per line, first line `Orchestra — Addie, Jess driving`; reply `1` to add all |
+| Someone's sick / a snow day | `Bryce is sick` · `snow day` · `no school Friday` — his things are skipped and the alerts stop |
+| A parent's away | `I'm away Tue–Thu` — rides nobody covers get listed |
+| One thing's off | `no orchestra Friday` · `skip soccer Saturday` |
+| Never mind | `Bryce is fine` · `school is on` · `never mind, orchestra is on` |
 | Help | `?` |
 
 It always texts back what it did, so you can tell at a glance if it heard you

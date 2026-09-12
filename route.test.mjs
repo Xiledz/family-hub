@@ -326,7 +326,7 @@ asks('Addie recital?',                'ask_help');
 order("what's on the list",           'show');
 order("what's on the costco list",    'show:Costco');
 order("Bryce's list",                 'todo_show');
-order('dinner is leftovers',          'ask');       // a statement, not a question (M1 #8 owns it)
+order('dinner is leftovers',          'dinner');    // a statement, not a question — the meal (M1-g)
 order('schedule the dentist',         'todo');
 order('did the dishes',               'todo_done');
 order('got milk',                     'got');
@@ -342,6 +342,38 @@ order('Orchestra — Addie\n9/15 6pm\n9/22 6pm\n9/29 6pm', 'season');
 order('milk\neggs\nbananas',                              'shop');
 order('anything thursday?\nanything friday?\nanything saturday?', 'ask_day');
 order('9/15 6pm\n9/22 6pm',                               'event');   // two lines: not a season
+
+/* --- NOT HAPPENING ---------------------------------------------------------
+   Sick, snow day, away, one rehearsal cancelled — resolved at stage 0,
+   before the remove/kill verbs that "no ..." would otherwise reach. A "no"
+   with no date keeps its old meaning. */
+order('Bryce is sick today',     'absence');
+order('snow day',                'absence');
+order('no school Friday',        'absence');
+order('Erich is away Tue–Thu',   'absence');
+order('no orchestra Mar 9–13',   'skip_event');
+order('skip soccer Saturday',    'skip_event');
+order('Bryce is fine',           'unskip');
+order('no orchestra',            'correction>remove');   // no date: the old path
+order('Bryce is sick of soccer', 'ask');
+
+/* --- DINNER BY TEXT ---------------------------------------------------------
+   "dinner is leftovers" is the meal, said once. A clock or a place keeps it
+   an event; a question mark keeps it a question. */
+order('dinner is leftovers',       'dinner');
+order('dinner tonight is pizza',   'dinner');
+order("we're having tacos",        'dinner');
+order('dinner: chicken',           'dinner');
+order('dinner tomorrow is spaghetti', 'dinner');
+order('dinner is at 6',            'event');
+order("dinner at grandma's Sunday", 'event');
+order("what's for dinner",         'ask_dinner');
+{
+  const r = routeIntent('dinner tomorrow is spaghetti', { stores: STORES, members: ROSTER, now: NOW, me: 'Erich' });
+  const ok = r.dish === 'spaghetti' && r.date === '2026-09-11';
+  console.log((ok ? 'PASS  ' : 'FAIL  ') + 'dinner carries dish and day');
+  if (!ok) { console.log(`      got ${JSON.stringify(r)}`); fail++; } else pass++;
+}
 
 /* Plain messages are not diverted at all. */
 order('buy milk',            'shop');

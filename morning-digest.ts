@@ -20,7 +20,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
 
-const BUILD = '2026-09-11b-m1';
+const BUILD = '2026-09-12b-m1';
 
 const db = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -279,6 +279,46 @@ async function deliver(db: any, env: {
 }
 /* ===== end delivery chain ================================================ */
 
+/* "Nothing planned for dinner tonight" — to the default cook, once, at 4pm
+   on a weekday, only when no dinner row exists for today, never while the
+   cook is away or sick. nudge_log makes the hourly cron send once. */
+async function dinnerNudge(house: any, tz: string, now: any, opts: any) {
+  const weekday = !['Saturday', 'Sunday'].includes(now.weekday);
+  if (!opts.force && !(now.h === 16 && weekday)) {
+    return Response.json({ build: BUILD, mode: 'dinner', skipped: 'outside window', local: `${now.weekday} ${now.h}:${now.m}` });
+  }
+  const cookId = house?.default_cook_id;
+  if (!cookId) return Response.json({ build: BUILD, mode: 'dinner', skipped: 'no default cook' });
+
+  const { data: meal } = await db.from('meal_plan').select('id')
+    .eq('household_id', house.id).eq('plan_date', now.date).eq('slot', 'dinner')
+    .is('deleted_at', null).maybeSingle();
+  if (meal) return Response.json({ build: BUILD, mode: 'dinner', skipped: 'dinner is planned' });
+
+  const { data: away } = await db.from('member_absences').select('id')
+    .eq('household_id', house.id).eq('member_id', cookId).is('deleted_at', null)
+    .lte('from_date', now.date).gte('to_date', now.date).limit(1).maybeSingle();
+  if (away) return Response.json({ build: BUILD, mode: 'dinner', skipped: 'cook is away' });
+
+  const { data: cook } = await db.from('members').select('id, name, phone, notify_via_member_id')
+    .eq('id', cookId).maybeSingle();
+  if (!cook) return Response.json({ build: BUILD, mode: 'dinner', skipped: 'cook missing' });
+
+  const text = `Nothing planned for dinner tonight. Text "dinner is …" or plan it in the app.`;
+  if (opts.dry) return Response.json({ build: BUILD, mode: 'dinner', would_send: text, to: cook.name });
+
+  /* Claim the day first; a second wake-up in the window finds the row. */
+  const { error } = await db.from('nudge_log').insert({ kind: 'dinner', for_date: now.date, member_id: cook.id });
+  if (error) return Response.json({ build: BUILD, mode: 'dinner', skipped: 'already sent', detail: error.message });
+
+  const res = await deliver(db, ENV, cook, {
+    householdId: house.id, title: 'Dinner?', body: text, kind: 'nag',
+    refId: null, tag: `dn-${now.date}`, url: './index.html'
+  });
+  console.log('dinner-nudge build=' + BUILD + ' ' + JSON.stringify({ to: cook.name, ok: res.ok, via: res.channel }));
+  return Response.json({ build: BUILD, mode: 'dinner', sent: res.ok, to: cook.name, via: res.channel, detail: res.detail });
+}
+
 Deno.serve(async (req) => {
   if (!SECRET || req.headers.get('x-digest-secret') !== SECRET) {
     return new Response('Not found', { status: 404 });
@@ -290,6 +330,11 @@ Deno.serve(async (req) => {
     .select('id, timezone, default_cook_id').limit(1).single();
   const tz = house?.timezone || 'America/Chicago';
   const now = localParts(tz);
+
+  /* The 4pm nudge rides the same function and secret: cron `dinner-nudge`
+     wakes it hourly 20–23 UTC with {"mode":"dinner"}; it is 4pm on a weekday
+     here or it is nothing. */
+  if (opts.mode === 'dinner') return await dinnerNudge(house, tz, now, opts);
 
   const inWindow = (now.h > SEND_FROM.h || (now.h === SEND_FROM.h && now.m >= SEND_FROM.m))
                 && (now.h < SEND_UNTIL.h || (now.h === SEND_UNTIL.h && now.m < SEND_UNTIL.m));
@@ -391,6 +436,25 @@ Deno.serve(async (req) => {
     return `${w.name}:\n${shown.join('\n')}`;
   };
 
+  /* Who is not where the calendar says today. Every adult's digest carries
+     the line; the away parent's own digest lists the rides nobody covers. */
+  const { data: absences } = await db.from('member_absences')
+    .select('member_id, kind, from_date, to_date')
+    .eq('household_id', house!.id).is('deleted_at', null)
+    .lte('from_date', now.date).gte('to_date', now.date);
+  const absenceLinesFor = (reader: any) => {
+    const lines: string[] = [];
+    for (const a of absences ?? []) {
+      const who = (members ?? []).find((m: any) => m.id === a.member_id);
+      const until = a.to_date !== now.date ? ` through ${new Date(a.to_date + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })}` : '';
+      if (a.kind === 'school_closed') lines.push(`No school today${until}`);
+      else if (who && who.id === reader.id) lines.push(`You're ${a.kind === 'sick' ? 'home today (sick)' : 'away'}${until}`);
+      else if (who) lines.push(`${who.name} ${a.kind === 'sick' ? 'home today (sick)' : 'away'}${until}`);
+    }
+    return lines;
+  };
+  const awayIds = new Set((absences ?? []).filter((a: any) => a.kind === 'away').map((a: any) => a.member_id));
+
   const out: any[] = [];
   for (const g of groups) {
     const m = g.leader;
@@ -405,6 +469,14 @@ Deno.serve(async (req) => {
     if (error) { out.push({ member: m.name, status: 'query failed', error: error.message }); continue; }
 
     const extras = [await dinnerFor(m), ...(await todoLinesFor(m))].filter(Boolean);
+    extras.unshift(...absenceLinesFor(m));
+    if (awayIds.has(m.id)) {
+      const { data: rides } = await db.rpc('uncovered_rides', { p_member: m.id, p_date: now.date });
+      for (const r of rides ?? []) {
+        const when = r.all_day ? 'today' : clock(r.starts_at, tz);
+        extras.push(`Uncovered: ${r.title} ${when} — you were ${r.role === 'driving' ? 'driving' : r.role === 'pickup' ? 'picking up' : 'dropping off'}`);
+      }
+    }
     const blocks: string[] = [];
     for (const w of g.wards) { const b = await wardBlock(w); if (b) blocks.push(b); }
 

@@ -334,5 +334,20 @@ eq('catalog match is case-insensitive',
 eq('empty warns',   P('').warnings.length > 0, true);
 eq('verb only warns', P('buy').warnings.length > 0, true);
 
+/* --- the catalog remembers the store ------------------------------------
+   Ticking milk at HEB teaches the catalog that milk is an HEB thing. The
+   parser hands that memory back as catalogStore — apart from `store`, which
+   is only ever what the TEXT said — so the app can rank an explicit store,
+   then the chip it is looking at, then this. */
+{
+  const STORES2 = [{ id: 'h', name: 'HEB on 1488', aliases: ['1488'] }, { id: 'k', name: 'Kroger', aliases: [] }];
+  const CAT = [{ name: 'milk', category: 'dairy', store_id: 'h' }, { name: 'eggs', category: 'eggs', store_id: null }];
+  const r = parseShopping('milk and eggs', { stores: STORES2, catalog: CAT });
+  eq('catalog store rides along',  r.items.map(i => i.catalogStore), ['h', null]);
+  eq('...but is not the text\'s store', r.items.map(i => i.store), [null, null]);
+  const r2 = parseShopping('kroger: milk', { stores: STORES2, catalog: CAT });
+  eq('the text\'s store still wins', [r2.items[0].store.id, r2.items[0].catalogStore], ['k', 'h']);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

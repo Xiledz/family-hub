@@ -1278,10 +1278,16 @@ function parseShopping(input, opts = {}) {
         if (!heardAs && tokFix) heardAs = tokFix.from;
 
         const category = catOf(name, opts.catalog);
+        /* Where this house last bought it. Kept apart from `store` (what the
+           text said) so a caller can rank an explicit store, then the chip
+           it is looking at, then this memory — and never mistake one for
+           the other. */
+        const known = (opts.catalog || []).find(c => c.name.toLowerCase() === name.toLowerCase());
         out.items.push({
           name, qty, heardAs,
           note: idx === chunks.length - 1 ? note : null,
           store: section.store || null,
+          catalogStore: known && known.store_id ? known.store_id : null,
           category, ...freshness(category)
         });
       });
@@ -1524,6 +1530,14 @@ function routeIntent(body, opts = {}, from = 0) {
       const known = probe.items.filter(i => i.category !== 'other').length;
       if (probe.items.length >= 3 && known * 2 >= probe.items.length) return { intent: 'shop' };
     }
+    /* Not happening: a sick kid, a snow day, a parent away, one rehearsal
+       cancelled. Before the questions and before the remove/kill verbs at
+       stage 2 — "no school Friday" is not a shopping correction. */
+    const abs = absenceIntent(text, opts);
+    if (abs) return abs;
+    /* "dinner is leftovers" — the meal, said once. */
+    const din = dinnerIntent(text, opts);
+    if (din) return din;
     /* Questions. Before anything that can write a row: "anything
        Thursday?" was becoming an event titled "anything". */
     const ask = askIntent(text, opts);
@@ -2149,6 +2163,195 @@ function parseSeason(text, opts = {}) {
   return out;
 }
 
+/* ===========================================================================
+ * 16. ABSENCES AND SKIPS
+ *
+ * The month's most common interruption is somebody not being where the
+ * calendar says: a sick kid, a snow day, a parent out of town, one rehearsal
+ * cancelled. Today the app makes it worse — the driver alert still fires at
+ * 3:15 for an orchestra nobody is going to. One grammar for "not happening":
+ *
+ *   Bryce is sick [today|tomorrow|<date>]       → absence, kind 'sick'
+ *   snow day / no school [Friday]               → absence, kind 'school_closed'
+ *   Erich is away Tue–Thu / I'm out of town …   → absence, kind 'away'
+ *   no orchestra Mar 9–13 / skip soccer Saturday / orchestra is cancelled
+ *                                               → skip_event
+ *   Bryce is fine / Bryce is back / school is on / cancel the skip
+ *                                               → unskip
+ *
+ * Ranges reuse the date grammar in parseQuickAdd for each end — "Tue–Thu",
+ * "Mar 9–13", "9/15-9/18", "through Friday", "this week" — there is no
+ * second date parser here. Default is today. "no <thing>" needs a date, or
+ * "no bike" would stop taking bike off the shopping list.
+ * ========================================================================= */
+
+const ABS_RE = {
+  SICK   : /^(.+?)\s+(?:is|are|'s|s)?\s*(?:home\s+sick|out\s+sick|sick|stayed\s+home|staying\s+home|home\s+today|out)(?:\s+(.*))?$/i,
+  SCHOOL : /^(?:snow\s+day|ice\s+day|no\s+school|school(?:'s|\s+is)?\s+(?:closed|cancelled|canceled|out|off))(?:\s+(.*))?$/i,
+  AWAY   : /^(.+?)\s*(?:is|are|am|'m|'s)?\s*(?:away|traveling|travelling|out\s+of\s+town|gone|on\s+a\s+trip)(?:\s+(.*))?$/i,
+  SKIP   : /^skip\s+(?:the\s+)?(.+?)$/i,
+  /* "no bike" takes bike off the shopping list and "cancel soccer" removes
+     the event; both keep their old meaning. WITH a date they mean one
+     occurrence: "no orchestra Friday", "cancel soccer Saturday". */
+  NO     : /^(?:no|cancel)\s+(?:the\s+)?(.+?)$/i,
+  OFF    : /^(.+?)\s+(?:is|are)\s+(?:cancelled|canceled|off|not\s+happening|not\s+on)(?:\s+(.*))?$/i,
+  FINE   : /^(.+?)\s+(?:is|are|'s|s)?\s*(?:fine|better|back|ok|okay|good|going\s+after\s+all|not\s+sick|at\s+school)(?:\s+(.*))?$/i,
+  UNSKIP : /^(?:cancel|undo|remove|drop)\s+(?:the\s+|that\s+)?skip$/i,
+  ON     : /^(?:never\s*mind|nvm|actually)[,\s]+(.+?)\s+is\s+(?:on|back\s+on|happening|back)(?:\s+(.*))?$/i,
+  SCHOOL_ON: /^school(?:'s|\s+is)?\s+(?:on|open|back|back\s+on)(?:\s+(.*))?$/i,
+  /* One end of a range, as people write it. */
+  RANGE  : /^(.+?)\s*(?:–|—|-|\bto\b|\bthrough\b|\bthru\b|\btil\b|\btill\b|\buntil\b)\s*(.+)$/i,
+  THROUGH: /^(?:through|thru|til|till|until|to)\s+(.+)$/i,
+  WEEK   : /^(?:this|all|the\s+whole|the\s+rest\s+of\s+the|rest\s+of\s+the|the)\s+week$/i,
+  NEXT_WEEK: /^next\s+week$/i,
+};
+
+const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return ymd(x); };
+const dowOf   = d => new Date(d + 'T12:00:00').getDay();
+
+/* One date from a fragment, via the calendar grammar. An absence is about
+   NOW, so "Thursday" said on a Thursday is today, not next week. */
+function oneDate(fragment, now, base) {
+  const f = String(fragment || '').trim();
+  if (!f) return null;
+  /* A bare day number after "Mar 9–": same month as the left end. */
+  if (base && /^\d{1,2}$/.test(f)) {
+    const d = new Date(base + 'T12:00:00'); d.setDate(+f);
+    return d.getDate() === +f ? ymd(d) : null;
+  }
+  const q = parseQuickAdd(f, { members: [], now: base ? new Date(base + 'T12:00:00') : now });
+  if (!q.matched.includes('date')) return null;
+  if (q.title && q.title !== 'Untitled') return null;
+  return q.alsoToday || q.date;
+}
+
+/* "", "today", "Friday", "Tue–Thu", "Mar 9–13", "through Friday", "this
+   week" → { from, to } or null when the tail is not about dates at all. */
+function dateRange(tail, opts = {}) {
+  const now = opts.now || new Date();
+  const today = ymd(now);
+  const t = String(tail || '').trim().replace(/^(?:on|for|from)\s+/i, '');
+  if (!t) return { from: today, to: today };
+  let m;
+  if (ABS_RE.WEEK.test(t))      return { from: today, to: plusDays(today, 7 - dowOf(today)) };
+  if (ABS_RE.NEXT_WEEK.test(t)) { const mon = plusDays(today, 8 - (dowOf(today) || 7)); return { from: mon, to: plusDays(mon, 6) }; }
+  if ((m = t.match(ABS_RE.THROUGH))) {
+    const to = oneDate(m[1], now);
+    return to ? { from: today, to } : null;
+  }
+  if ((m = t.match(ABS_RE.RANGE))) {
+    const from = oneDate(m[1], now);
+    const to   = from ? oneDate(m[2], now, from) : null;
+    /* The grammar rolls a past date to next year; "9/18-9/15" would become
+       a year-long absence. No absence is that long. */
+    if (from && to && to >= from && (new Date(to) - new Date(from)) < 120 * 86400000) return { from, to };
+    return null;
+  }
+  const d = oneDate(t, now);
+  return d ? { from: d, to: d } : null;
+}
+
+/* Who, from the front of a sentence. "I" / "I'm" is the sender. */
+function absWho(fragment, opts) {
+  const f = String(fragment || '').trim();
+  if (/^(?:i|i'm|im|me)$/i.test(f)) return opts.me ? [opts.me] : [];
+  const lead = leadingNames(f + ' x', opts.members || []);
+  return lead && lead.rest === 'x' ? lead.names : whoIn(f, opts.members || []).length && f.split(/\s+/).length <= 3 ? whoIn(f, opts.members || []) : [];
+}
+
+/* opts: { members, now, me }. Returns an absence / skip / unskip intent or null. */
+function absenceIntent(body, opts = {}) {
+  const text = String(body || '').trim().replace(/[.!]+$/, '');
+  let m, r;
+
+  if ((m = text.match(ABS_RE.SCHOOL))) {
+    r = dateRange(m[1], opts);
+    if (r) return { intent: 'absence', who: null, kind: 'school_closed', ...r };
+  }
+  if ((m = text.match(ABS_RE.SCHOOL_ON))) {
+    r = dateRange(m[1], opts);
+    if (r) return { intent: 'unskip', who: null, kind: 'school_closed', ...r };
+  }
+  if (ABS_RE.UNSKIP.test(text)) return { intent: 'unskip', who: null, title: null, last: true };
+  if ((m = text.match(ABS_RE.ON))) {
+    r = dateRange(m[2], opts);
+    if (r) return { intent: 'unskip', who: null, title: m[1].trim(), ...r };
+  }
+
+  /* People first: "Bryce is sick" / "Erich is away Tue–Thu" / "Bryce is fine".
+     The name must be the whole front of the sentence, and the tail must be
+     a date or nothing — "Bryce is sick of soccer" is a complaint. */
+  if ((m = text.match(ABS_RE.AWAY))) {
+    const who = absWho(m[1], opts); r = dateRange(m[2], opts);
+    if (who.length && r) return { intent: 'absence', who: who[0], kind: 'away', ...r };
+  }
+  if ((m = text.match(ABS_RE.SICK))) {
+    const who = absWho(m[1], opts); r = dateRange(m[2], opts);
+    if (who.length && r) return { intent: 'absence', who: who[0], kind: 'sick', ...r };
+  }
+  if ((m = text.match(ABS_RE.FINE))) {
+    const who = absWho(m[1], opts); r = dateRange(m[2], opts);
+    if (who.length && r) return { intent: 'unskip', who: who[0], title: null, ...r };
+  }
+
+  /* Events: "skip soccer Saturday", "orchestra is cancelled", "no orchestra
+     Mar 9–13". The date is peeled off the end; what is left is the title. */
+  const titleAndRange = (rest, needDate) => {
+    const words = rest.trim().split(/\s+/);
+    for (let i = 1; i < words.length; i++) {
+      const rr = dateRange(words.slice(i).join(' '), opts);
+      if (rr) return { title: words.slice(0, i).join(' '), ...rr };
+    }
+    if (needDate) return null;
+    const today = ymd(opts.now || new Date());
+    return { title: rest.trim(), from: today, to: today };
+  };
+  if ((m = text.match(ABS_RE.OFF))) {
+    r = dateRange(m[2], opts);
+    if (r) return { intent: 'skip_event', title: m[1].trim(), ...r };
+  }
+  if ((m = text.match(ABS_RE.SKIP))) {
+    const x = titleAndRange(m[1], false);
+    if (x && x.title) return { intent: 'skip_event', ...x };
+  }
+  if ((m = text.match(ABS_RE.NO))) {
+    const x = titleAndRange(m[1], true);
+    if (x && x.title) return { intent: 'skip_event', ...x };
+  }
+  return null;
+}
+
+/* ===========================================================================
+ * 17. DINNER BY TEXT
+ *
+ * "dinner is leftovers" is the Wednesday message. It is a statement about
+ * the meal, not an appointment: "dinner is at 6" and "dinner at grandma's
+ * Sunday" carry a clock or a place and stay events. The dish is matched to
+ * a saved recipe by the handler; here it is just words and a day.
+ * ========================================================================= */
+const DINNER_RE = {
+  IS     : /^(?:dinner|supper|tonight)(?:\s+(tonight|today|tomorrow|tmrw|(?:on\s+)?(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?))?\s*(?:is|:|=|will\s+be|-|—|—)\s*(.+)$/i,
+  HAVING : /^(?:we'?re|we\s+are|were)\s+(?:having|doing|eating|making)\s+(.+?)(?:\s+(?:for\s+dinner|for\s+supper))?(?:\s+(tonight|today|tomorrow|tmrw))?$/i,
+};
+
+function dinnerIntent(body, opts = {}) {
+  const text = String(body || '').trim().replace(/[.!]+$/, '');
+  const now = opts.now || new Date();
+  let m, dayWord = null, dish = null;
+  if ((m = text.match(DINNER_RE.IS)))          { dayWord = m[1] || (/^tonight/i.test(text) ? 'tonight' : null); dish = m[2]; }
+  else if ((m = text.match(DINNER_RE.HAVING))) { dish = m[1]; dayWord = m[2] || null; }
+  if (!dish) return null;
+  dish = dish.trim().replace(/^(?:going\s+to\s+be|gonna\s+be)\s+/i, '');
+  /* A clock in the dish makes it an appointment, not a menu. */
+  const q = parseQuickAdd(dish, { members: [], now });
+  if (q.matched.includes('time')) return null;
+  if (q.matched.includes('date') && (!q.title || q.title === 'Untitled')) return null;
+  const date = dayWord ? (oneDate(dayWord.replace(/^on\s+/i, ''), now) || ymd(now)) : ymd(now);
+  const clean = dish.replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+  return { intent: 'dinner', dish: clean, date };
+}
+
 /* Split a pasted block into ingredient lines. Headings like "For the sauce:"
    are dropped; blank lines are dropped; everything else is an ingredient. */
 function splitIngredientBlock(text) {
@@ -2195,7 +2398,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-11d-m1';
+const BUILD = '2026-09-12b-m1';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
@@ -2598,7 +2801,7 @@ async function addShopping(db: any, body: string, sender: any) {
     .is('cleared_at', null).eq('got', false);
   const already = new Set((live ?? []).map((r: any) => `${r.store_id ?? ''}|${String(r.name).toLowerCase()}`));
   const dupes = p.items.filter((it: any) =>
-    already.has(`${it.store?.id ?? p.store?.id ?? ''}|${it.name.toLowerCase()}`));
+    already.has(`${it.store?.id ?? p.store?.id ?? it.catalogStore ?? ''}|${it.name.toLowerCase()}`));
   p.items = p.items.filter((it: any) => !dupes.includes(it));
 
   if (!p.items.length) {
@@ -2609,7 +2812,8 @@ async function addShopping(db: any, body: string, sender: any) {
 
   const rows = p.items.map((it: any) => ({
     household_id: HOUSEHOLD,
-    store_id: it.store?.id ?? p.store?.id ?? null,
+    /* What the text said, else where this house last bought it. */
+    store_id: it.store?.id ?? p.store?.id ?? it.catalogStore ?? null,
     name: it.name, qty: it.qty, note: it.note, category: it.category,
     pick_yourself: !!it.pickYourself, online_ok: !!it.onlineOk,
     added_by: sender.id, source: 'sms'
@@ -3004,6 +3208,201 @@ async function answerGot(db: any, members: any[], routed: any, tz: string) {
   return twiml(lines.join('\n'));
 }
 
+/* ===========================================================================
+ * NOT HAPPENING — absences and skips
+ *
+ * The SQL (024) does the work: apply_absence writes the skips, pauses the
+ * reminders and nags, and hands back what it did; the text here only says
+ * it out loud. A single cancelled occurrence is a skip exception with no
+ * absence behind it.
+ * ========================================================================= */
+const KIND_SAY: Record<string, string> = { sick: 'home sick', away: 'away', school_closed: 'no school' };
+
+function rangeSay(from: string, to: string) {
+  return from === to ? prettyShort(from) : `${prettyShort(from)}–${prettyShort(to)}`;
+}
+function occSay(o: any, tz: string, withDate: boolean) {
+  const when = o.all_day ? '' : ` ${clock(utcToWall(o.starts_at, tz)).replace(/ \(.*\)$/, '')}`;
+  return `${withDate ? prettyShort(o.date) + ' ' : ''}${o.title}${when}`;
+}
+
+async function recordAbsence(db: any, routed: any, sender: any, members: any[], tz: string) {
+  const who = routed.who
+    ? members.find((m: any) => m.name.toLowerCase() === String(routed.who).toLowerCase()) : null;
+  if (routed.who && !who) return twiml(`I don't know ${routed.who}.`);
+
+  const { data: row, error } = await db.from('member_absences').insert({
+    household_id: HOUSEHOLD, member_id: who?.id ?? null, kind: routed.kind,
+    from_date: routed.from, to_date: routed.to, created_by: sender.id
+  }).select('id').single();
+  if (error || !row) return twiml(`Could not save that: ${error?.message ?? 'unknown'}`);
+
+  const { data: res } = await db.rpc('apply_absence', { p_absence: row.id });
+  const multi = routed.from !== routed.to;
+  const head = who
+    ? `${who.name} ${KIND_SAY[routed.kind]} ${rangeSay(routed.from, routed.to)}.`
+    : `${routed.kind === 'school_closed' ? 'No school' : 'Noted'} ${rangeSay(routed.from, routed.to)}.`;
+  const lines: string[] = [head];
+  const skipped = res?.skipped ?? [], uncovered = res?.uncovered ?? [];
+  if (skipped.length) {
+    lines.push('Skipped: ' + skipped.slice(0, 8).map((o: any) =>
+      `${occSay(o, tz, multi)}${!who && o.who ? ` (${o.who})` : ''}${o.driver ? ` (${o.driver} was driving)` : ''}`).join(', ')
+      + (skipped.length > 8 ? ` +${skipped.length - 8} more` : ''));
+  }
+  if (uncovered.length) {
+    lines.push('Uncovered: ' + uncovered.slice(0, 8).map((o: any) =>
+      `${occSay(o, tz, true)} ${o.role === 'driving' ? 'drive' : o.role}${o.who && who?.id !== o.who ? ` (${o.who})` : ''}`).join(', ')
+      + '. Someone else will need to take it.');
+  }
+  if (res?.nags_paused > 0) lines.push(`${res.nags_paused === 1 ? 'Chore nag' : `${res.nags_paused} chore nags`} paused.`);
+  if (!skipped.length && !uncovered.length) lines.push('Nothing on the calendar to skip.');
+  lines.push(`Say "${who ? who.name + ' is fine' : 'school is on'}" to undo.`);
+  return twiml(lines.join('\n'));
+}
+
+/* Every occurrence in a range whose title answers to the needle. */
+async function findOccurrences(db: any, title: string, from: string, to: string) {
+  const out: any[] = [];
+  const start = new Date(from + 'T12:00:00Z'), end = new Date(to + 'T12:00:00Z');
+  for (let d = new Date(start), i = 0; d <= end && i < 62; d.setUTCDate(d.getUTCDate() + 1), i++) {
+    const date = d.toISOString().slice(0, 10);
+    const { data: occ } = await db.rpc('occurrences_on', { p_date: date });
+    for (const o of occ ?? []) {
+      const sc = scoreTitle(title, o.title);
+      if (sc >= 0.5) out.push({ ...o, date, score: sc });
+    }
+  }
+  const best = Math.max(0, ...out.map(o => o.score));
+  return out.filter(o => o.score === best);
+}
+
+async function skipOccurrences(db: any, occ: any[], sender: any, tz: string) {
+  const rows = occ.map((o: any) => ({
+    household_id: HOUSEHOLD, event_id: o.event_id, occurrence_date: o.date,
+    action: 'skip', created_by: sender.id
+  }));
+  const { error } = await db.from('event_exceptions')
+    .upsert(rows, { onConflict: 'event_id,occurrence_date' });
+  if (error) return twiml(`Could not skip that: ${error.message}`);
+  const multi = new Set(occ.map((o: any) => o.date)).size > 1 || occ.length > 1;
+  return twiml(`Skipped: ${occ.slice(0, 10).map((o: any) => occSay(o, tz, multi)).join(', ')}` +
+               (occ.length > 10 ? ` +${occ.length - 10} more` : '') +
+               `.\nSay "never mind, ${occ[0].title.toLowerCase()} is on" to undo.`);
+}
+
+async function skipEvent(db: any, routed: any, sender: any, tz: string) {
+  const occ = await findOccurrences(db, routed.title, routed.from, routed.to);
+  if (!occ.length) return twiml(`Nothing called "${routed.title}" ${rangeSay(routed.from, routed.to)}.`);
+  const titles = [...new Set(occ.map((o: any) => o.title))];
+  if (titles.length > 1) {
+    /* Two different things answer to the name. Ask, through the question
+       kind that already exists; the answer picks one title. */
+    const few = titles.slice(0, 4);
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: sender.id, kind: 'route_intent',
+      payload: { body: routed.title, skip: { from: routed.from, to: routed.to, titles: few } },
+      options: [ ...few.map((t: string, i: number) => ({ keys: [String(i + 1)], value: `skip:${i}` })),
+                 { keys: ['cancel','stop','no'], value: 'cancel' } ],
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    return twiml('Which one?\n' + few.map((t: string, i: number) => `${i + 1} = ${t}`).join('\n'));
+  }
+  return await skipOccurrences(db, occ, sender, tz);
+}
+
+async function unskip(db: any, routed: any, sender: any, members: any[], tz: string) {
+  const restore = async (xs: any[]) => {
+    let n = 0;
+    for (const x of xs) {
+      await db.from('event_exceptions').delete().eq('id', x.id);
+      await db.rpc('rematerialize_occurrence', { p_event: x.event_id, p_date: x.occurrence_date });
+      n++;
+    }
+    return n;
+  };
+
+  /* "cancel the skip": the newest thing this person did — an absence, or a
+     lone skip — within the last day. */
+  if (routed.last) {
+    const { data: ab } = await db.from('member_absences').select('id, kind, member_id, created_at')
+      .eq('household_id', HOUSEHOLD).eq('created_by', sender.id).is('deleted_at', null)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    const { data: ex } = await db.from('event_exceptions').select('id, event_id, occurrence_date, created_at, events(title)')
+      .eq('household_id', HOUSEHOLD).eq('created_by', sender.id).eq('action', 'skip').is('absence_id', null)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    const tA = ab ? Date.parse(ab.created_at) : 0, tX = ex ? Date.parse(ex.created_at) : 0;
+    if (!tA && !tX) return twiml('Nothing of yours to undo.');
+    if (tA >= tX) {
+      await db.rpc('revoke_absence', { p_absence: ab.id });
+      const m = members.find((x: any) => x.id === ab.member_id);
+      return twiml(`Undone — ${m ? m.name + ' is' : 'the kids are'} back on the calendar.`);
+    }
+    await restore([ex]);
+    return twiml(`Undone — ${ex.events?.title ?? 'it'} is back on ${prettyShort(ex.occurrence_date)}.`);
+  }
+
+  /* "Bryce is fine" / "school is on": the live absence that covers the day. */
+  if (routed.who || routed.kind === 'school_closed') {
+    const who = routed.who
+      ? members.find((m: any) => m.name.toLowerCase() === String(routed.who).toLowerCase()) : null;
+    if (routed.who && !who) return twiml(`I don't know ${routed.who}.`);
+    let q = db.from('member_absences').select('id, kind, from_date, to_date')
+      .eq('household_id', HOUSEHOLD).is('deleted_at', null)
+      .lte('from_date', routed.to).gte('to_date', routed.from)
+      .order('created_at', { ascending: false });
+    q = who ? q.eq('member_id', who.id) : q.is('member_id', null).eq('kind', 'school_closed');
+    const { data: abs } = await q;
+    if (!abs?.length) return twiml(who ? `${who.name} wasn't marked out ${rangeSay(routed.from, routed.to)}.`
+                                        : `School wasn't marked closed ${rangeSay(routed.from, routed.to)}.`);
+    let n = 0;
+    for (const a of abs) { const { data: k } = await db.rpc('revoke_absence', { p_absence: a.id }); n += k ?? 0; }
+    return twiml(`${who ? who.name + ' is' : 'The kids are'} back on the calendar` +
+                 (n ? ` — ${n} thing${n === 1 ? '' : 's'} un-skipped, reminders back.` : '.'));
+  }
+
+  /* "never mind, orchestra is on": lone skips matching the title in range. */
+  if (routed.title) {
+    const { data: xs } = await db.from('event_exceptions').select('id, event_id, occurrence_date, events(title)')
+      .eq('household_id', HOUSEHOLD).eq('action', 'skip')
+      .gte('occurrence_date', routed.from).lte('occurrence_date', routed.to);
+    const hits = (xs ?? []).filter((x: any) => scoreTitle(routed.title, x.events?.title ?? '') >= 0.5);
+    if (!hits.length) return twiml(`Nothing called "${routed.title}" is skipped ${rangeSay(routed.from, routed.to)}.`);
+    const n = await restore(hits);
+    return twiml(`${hits[0].events?.title ?? routed.title} is back on ${hits.map((x: any) => prettyShort(x.occurrence_date)).join(', ')} (${n} restored).`);
+  }
+  return twiml('Undo what? Say "Bryce is fine", "school is on", or "never mind, orchestra is on".');
+}
+
+/* "dinner is leftovers" — tonight's meal, said once. A saved recipe whose
+   name answers to the words is planned as that recipe (servings by the same
+   rule as the app: a batch recipe is made as a batch); anything else is a
+   freeform meal. The cook is left null so the household default applies. */
+async function setDinner(db: any, routed: any, sender: any, house: any) {
+  const { data: recipes } = await db.from('recipes').select('id, name, servings')
+    .eq('household_id', HOUSEHOLD).is('deleted_at', null);
+  const scored = (recipes ?? []).map((r: any) => ({ r, s: scoreTitle(routed.dish, r.name) }))
+    .filter((x: any) => x.s >= 0.6).sort((a: any, b: any) => b.s - a.s);
+  const recipe = scored[0]?.r ?? null;
+  const dflt = house?.default_servings ?? 4;
+  const servings = recipe?.servings && recipe.servings >= 2 * dflt ? recipe.servings : dflt;
+  const row: any = {
+    household_id: HOUSEHOLD, plan_date: routed.date, slot: 'dinner',
+    recipe_id: recipe?.id ?? null, freeform: recipe ? null : routed.dish,
+    servings, created_by: sender.id, updated_at: new Date().toISOString()
+  };
+  const { data: existing } = await db.from('meal_plan').select('id')
+    .eq('household_id', HOUSEHOLD).eq('plan_date', routed.date).eq('slot', 'dinner')
+    .is('deleted_at', null).maybeSingle();
+  const { error } = existing
+    ? await db.from('meal_plan').update(row).eq('id', existing.id)
+    : await db.from('meal_plan').insert(row);
+  if (error) return twiml(`Could not save that: ${error.message}`);
+  const line = await dinnerLine(db, house, routed.date);
+  const when = routed.date === nowYmd(house?.timezone) ? 'tonight' : `on ${prettyShort(routed.date)}`;
+  return twiml((line ?? `Dinner: ${routed.dish}`).replace(/^Dinner:/, `Dinner ${when}:`) +
+               (recipe ? ' (from your recipes)' : ''));
+}
+
 const ASK_HELP = 'I can answer: "what\'s Thursday", "who\'s driving Addie Monday", ' +
                  '"what\'s for dinner", "did Jess get the milk". To add something, leave off the "?".';
 
@@ -3212,7 +3611,7 @@ Deno.serve(async (req) => {
   const db   = admin();
   console.log('sms-inbound ACCEPTED build=' + BUILD + ' from ' + from);
 
-  const { data: house } = await db.from('households').select('timezone, default_cook_id').eq('id', HOUSEHOLD).single();
+  const { data: house } = await db.from('households').select('timezone, default_cook_id, default_servings').eq('id', HOUSEHOLD).single();
   const tz = house?.timezone || 'America/Chicago';
   const { data: members } = await db.from('members').select('*')
     .eq('household_id', HOUSEHOLD).is('deleted_at', null);
@@ -3292,6 +3691,13 @@ Deno.serve(async (req) => {
 
       if (pend.kind === 'route_intent') {
         if (hit.value === 'cancel') return twiml('Dropped it.');
+        if (pl.skip && String(hit.value).startsWith('skip:')) {
+          const title = pl.skip.titles[+String(hit.value).slice(5)];
+          const occ = (await findOccurrences(db, title, pl.skip.from, pl.skip.to))
+            .filter((o: any) => o.title === title);
+          if (!occ.length) return twiml('That one is already gone.');
+          return await skipOccurrences(db, occ, sender, tz);
+        }
         if (hit.value === 'shop')   return await addShopping(db, pl.body, sender);
         if (hit.value === 'todo')   return await addTodo(db, pl.body, sender, members ?? [], tz, nowInTz(tz));
         const rp = parseQuickAdd(pl.body, {
@@ -3362,6 +3768,8 @@ Deno.serve(async (req) => {
       'See them: "my list" or "Bryce\'s list". Finished: "did the trash"\n' +
       'Ask: "what\'s Thursday", "who\'s driving Addie Monday", "what\'s for dinner"\n' +
       'A whole schedule: paste it, one date per line, with a first line like "Orchestra — Addie, Jess driving"\n' +
+      'Not happening: "Bryce is sick", "snow day", "I\'m away Tue-Thu", "no orchestra Friday". Undo: "Bryce is fine"\n' +
+      'Dinner: "dinner is leftovers", "we\'re having tacos"\n' +
       'Reply STOP to opt out.\n' +
       `build ${BUILD}`);
   }
@@ -3386,6 +3794,15 @@ Deno.serve(async (req) => {
   const routeCtx = { stores: shopCtx.stores, catalog: shopCtx.catalog,
                      members: names, now, me: sender.name };
   const routed = routeIntent(body, routeCtx);
+
+  /* ---- dinner, said once -----------------------------------------------------*/
+  if (routed.intent === 'dinner') return await setDinner(db, routed, sender, house);
+
+  /* ---- not happening -------------------------------------------------------
+     Sick, snow day, away, one rehearsal cancelled, and the undo. */
+  if (routed.intent === 'absence')    return await recordAbsence(db, routed, sender, members ?? [], tz);
+  if (routed.intent === 'skip_event') return await skipEvent(db, routed, sender, tz);
+  if (routed.intent === 'unskip')     return await unskip(db, routed, sender, members ?? [], tz);
 
   /* ---- a pasted schedule ---------------------------------------------------
      Many rows, one question, no rides follow-up. */
@@ -3576,7 +3993,7 @@ Deno.serve(async (req) => {
 
       if (wanted.length) {
         const { data: live } = await db.from('shopping_items')
-          .select('id, name, got').eq('household_id', HOUSEHOLD).is('cleared_at', null);
+          .select('id, name, got, store_id').eq('household_id', HOUSEHOLD).is('cleared_at', null);
 
         /* Exact first. Only widen to a partial match when nothing matched
            exactly, or "milk" quietly takes the almond milk with it. */
@@ -3603,6 +4020,17 @@ Deno.serve(async (req) => {
           await db.from('shopping_items')
             .update({ got: true, got_at: new Date().toISOString(), got_by: sender.id })
             .in('id', ids);
+          /* The tick teaches the catalog where a thing is bought. Over text
+             there is no store on screen, so only an item that already has
+             one can teach (last tick wins) — same rule as the app. */
+          for (const h of hits) {
+            if (!h.store_id) continue;
+            const c = catalog.find((x: any) => String(x.name).toLowerCase() === lower(h));
+            if (c && c.store_id !== h.store_id) {
+              await db.from('shopping_catalog').update({ store_id: h.store_id })
+                .eq('household_id', HOUSEHOLD).eq('name', c.name);
+            }
+          }
           return twiml(`Got: ${shown}`);
         }
 

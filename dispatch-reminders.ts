@@ -12,7 +12,7 @@
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-const BUILD = '2026-09-11a-m0';
+const BUILD = '2026-09-12a-m1';
 
 const admin = () => createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -277,11 +277,20 @@ Deno.serve(async (req) => {
     }
     if (kind === 'todo' && subject.completed_at) { await mark(db, r.id, now, null, 'already done'); continue; }
     if (kind === 'meal' && subject.done_at)      { await mark(db, r.id, now, null, 'meal done');    continue; }
-    /* A ticked-off occurrence of a series must not ping. */
-    if (kind === 'event' && r.occurrence_date) {
-      const { data: done } = await db.from('event_done').select('event_id')
-        .eq('event_id', r.event_id).eq('occurrence_date', r.occurrence_date).maybeSingle();
-      if (done) { await mark(db, r.id, now, null, 'occurrence done'); continue; }
+    /* A ticked-off or SKIPPED occurrence must not ping — even if a reminder
+       row survived (written before the skip, or by a path that forgot). A
+       one-off's app-written reminder has no occurrence_date; its date is the
+       event's own. */
+    if (kind === 'event') {
+      const od = r.occurrence_date ?? subject.event_date;
+      if (od) {
+        const { data: done } = await db.from('event_done').select('event_id')
+          .eq('event_id', r.event_id).eq('occurrence_date', od).maybeSingle();
+        if (done) { await mark(db, r.id, now, null, 'occurrence done'); continue; }
+        const { data: skip } = await db.from('event_exceptions').select('event_id')
+          .eq('event_id', r.event_id).eq('occurrence_date', od).eq('action', 'skip').maybeSingle();
+        if (skip) { await mark(db, r.id, now, null, 'occurrence skipped'); continue; }
+      }
     }
 
     const tz    = r.members?.timezone || 'America/Chicago';

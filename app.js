@@ -26,7 +26,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-11f';
+const APP_BUILD = '2026-09-12b';
 
 const state = {
   db: null, demo: isDemo(),
@@ -134,6 +134,26 @@ const DB = {
     const { data: ex } = await state.db.from('event_exceptions').select('*')
       .eq('household_id', CONFIG.HOUSEHOLD_ID);
     state.exceptions = ex || [];
+
+    /* Who is not where the calendar says: sick, away, snow day. Only the
+       ones still running; the Today card shows them as chips. */
+    const { data: ab } = await state.db.from('member_absences')
+      .select('id, member_id, kind, from_date, to_date')
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).is('deleted_at', null)
+      .gte('to_date', ymd(new Date()));
+    state.absences = ab || [];
+    await DB.loadTodayMeal();
+  },
+
+  /* Tonight's dinner for the Today card, without loading the whole Meals
+     module. Refreshed with the events and after any plan change. */
+  async loadTodayMeal(){
+    if (state.demo) { state.todayMeal = null; return; }
+    const { data } = await state.db.from('meal_plan')
+      .select('id, plan_date, ready_by, freeform, cook_id, created_by, done_at, recipe_id, recipes(name)')
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('plan_date', ymd(new Date())).eq('slot', 'dinner')
+      .is('deleted_at', null).maybeSingle();
+    state.todayMeal = data || null;
   },
 
   async saveEvent(e){
@@ -421,6 +441,38 @@ function enter(){
   initPush();
 }
 
+/* Tonight's dinner on the Today card: the dish, who cooks, when it is on
+   the table — or the one link that fixes "what's for dinner?" */
+function dinnerLine(){
+  const m = state.todayMeal;
+  if (!m) return `<div class="tdinner"><span class="tdlabel">Dinner</span> Nothing planned — <button type="button" class="link" data-plan-today>Plan</button></div>`;
+  const dish = m.recipes?.name || m.freeform || 'Dinner';
+  const cookId = m.cook_id || state.household?.default_cook_id || m.created_by || null;
+  const cook = state.members.find(x => x.id === cookId);
+  const bits = [esc(dish)];
+  if (cook) bits.push(`${esc(cook.name)} cooks`);
+  if (m.ready_by) bits.push(`on the table by ${clock12(m.ready_by)}`);
+  return `<div class="tdinner${m.done_at ? ' mdone' : ''}"><span class="tdlabel">Dinner</span> <button type="button" class="link" data-meal-today="${m.id}">${bits.join(' · ')}</button></div>`;
+}
+
+/* "Bryce home (sick)" / "Erich away" / "No school" on the Today card, for
+   any absence covering the day. Recorded by text ("Bryce is sick"); this is
+   the app's view of it. Skipped occurrences are simply absent from the
+   calendar — that is how a skip has always rendered. */
+function absenceChips(day){
+  const live = (state.absences || []).filter(a => a.from_date <= day && a.to_date >= day);
+  if (!live.length) return '';
+  const say = a => {
+    const m = state.members.find(x => x.id === a.member_id);
+    const until = a.to_date !== day ? ` thru ${new Date(a.to_date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' })}` : '';
+    if (a.kind === 'school_closed') return `No school${until}`;
+    if (!m) return '';
+    return a.kind === 'sick' ? `${m.name} home (sick)${until}` : `${m.name} away${until}`;
+  };
+  return `<div class="chips" style="margin:6px 0 10px">${live.map(say).filter(Boolean)
+    .map(t => `<span class="chip" aria-pressed="true" style="pointer-events:none">${esc(t)}</span>`).join('')}</div>`;
+}
+
 /* ==========================================================================
  * RENDER
  * ========================================================================*/
@@ -467,6 +519,8 @@ function render(){
         <div class="ch"><span>Today</span><b>${todays.length ? todays.length + (todays.length===1?' event':' events') : 'Clear'}</b></div>
         <div class="tdate">${now.toLocaleDateString('en-US',{weekday:'long'})}</div>
         <h2 class="tbig">${now.toLocaleDateString('en-US',{month:'short', day:'numeric'})}</h2>
+        ${absenceChips(today)}
+        ${dinnerLine()}
         ${todays.length ? todays.map(e => `
           <div class="trow${EV.isDone(e) ? ' evdone' : ''}" style="--c:${colorOf(e.member_id)}">
             <button class="tick" data-evtick="${e.id}" aria-label="Done">${EV.isDone(e) ? '✓' : ''}</button>
@@ -520,6 +574,10 @@ function render(){
     </div>`;
 
   $$('[data-ev]').forEach(b => b.onclick = () => openSheet(state.events.find(e => e.id === b.dataset.ev)));
+  const planToday = $('[data-plan-today]');
+  if (planToday) planToday.onclick = async () => { await SHOP.load(); await MEAL.load(); openPlanSheet(ymd(new Date())); };
+  const mealToday = $('[data-meal-today]');
+  if (mealToday) mealToday.onclick = async () => { await SHOP.load(); await MEAL.load(); openMealSheet(mealToday.dataset.mealToday); };
   $$('[data-evtick]').forEach(b => b.onclick = e => { e.stopPropagation(); EV.toggle(b.dataset.evtick); });
   $$('[data-day]').forEach(b => b.onclick = () => openSheet(null, b.dataset.day));
 }
@@ -665,13 +723,14 @@ const SHOP = {
         .is('deleted_at', null).order('sort_order'),
       state.db.from('shopping_items').select('*').eq('household_id', hh).is('cleared_at', null)
         .order('created_at'),
-      state.db.from('shopping_catalog').select('name, category, store_id').eq('household_id', hh),
+      state.db.from('shopping_catalog').select('id, name, category, store_id, staple, pick_yourself, times_added, last_added_at').eq('household_id', hh),
       state.db.from('store_aisles').select('store_id, category, aisle, sort_order, verified_at'),
       state.db.from('shopping_categories').select('name, sort_order')
     ]);
     state.stores = st.data || []; state.shopItems = it.data || [];
     state.shopCatalog = cat.data || []; state.shopAisles = ai.data || [];
     state.shopCats = cats.data || [];
+    await SHOP.seedStaples();
   },
 
   async add(text){
@@ -681,7 +740,9 @@ const SHOP = {
       .map(i => `${i.store_id ?? ''}|${i.name.toLowerCase()}`));
     const rows = [];
     for (const it of p.items) {
-      const sid = it.store?.id ?? state.shopStore ?? null;
+      /* What the text said, then the chip on screen, then where this house
+         last bought it (the catalog learns that from ticks). */
+      const sid = it.store?.id ?? state.shopStore ?? it.catalogStore ?? null;
       if (live.has(`${sid ?? ''}|${it.name.toLowerCase()}`)) continue;    // already there
       rows.push({
         household_id: CONFIG.HOUSEHOLD_ID, store_id: sid,
@@ -710,10 +771,59 @@ const SHOP = {
     const it = state.shopItems.find(i => i.id === id); if (!it) return;
     const got = !it.got;
     it.got = got;                                            // optimistic
+    /* The tick is the one honest signal of where a thing is bought. An
+       "any store" item ticked with a store chip on screen moves under that
+       store; either way the catalog remembers the store for next time
+       (last tick wins). */
+    const patch = { got, got_at: got ? new Date().toISOString() : null, got_by: got ? state.me?.id : null };
+    let learned = null;
+    if (got) {
+      if (!it.store_id && state.shopStore) { it.store_id = state.shopStore; patch.store_id = state.shopStore; }
+      learned = it.store_id || null;
+    }
     render();
-    await state.db.from('shopping_items').update({
-      got, got_at: got ? new Date().toISOString() : null, got_by: got ? state.me?.id : null
-    }).eq('id', id);
+    await state.db.from('shopping_items').update(patch).eq('id', id);
+    if (learned) {
+      const cat = state.shopCatalog.find(c => c.name.toLowerCase() === it.name.toLowerCase());
+      if (cat && cat.store_id !== learned) {
+        cat.store_id = learned;
+        await state.db.from('shopping_catalog').update({ store_id: learned })
+          .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('name', cat.name);
+      }
+    }
+  },
+
+  /* Up to eight things this house buys most, not already on the list — one
+     tap each. Ranked by how often, then how recently. */
+  recent(limit = 8){
+    const live = new Set(state.shopItems.filter(i => !i.got).map(i => i.name.toLowerCase()));
+    return [...state.shopCatalog]
+      .filter(c => c.name && !live.has(c.name.toLowerCase()) && !/\s.*\s.*\s/.test(c.name))
+      .sort((a, b) => (b.times_added ?? 0) - (a.times_added ?? 0)
+                   || String(b.last_added_at ?? '').localeCompare(String(a.last_added_at ?? '')))
+      .slice(0, limit);
+  },
+
+  /* Star the obvious staples, once, from what the catalog already knows.
+     Never invents a row: a house that has never bought cumin does not get
+     cumin starred. households.staples_seeded_at is the guard (025). */
+  async seedStaples(){
+    if (state.demo || !state.household || state.household.staples_seeded_at) return;
+    const STAPLES = ['salt','pepper','black pepper','olive oil','vegetable oil','canola oil','flour','sugar',
+      'brown sugar','butter','garlic powder','onion powder','ketchup','mustard','mayo','mayonnaise','soy sauce',
+      'rice','pasta','spaghetti','baking soda','baking powder','vanilla','vanilla extract','cinnamon',
+      'peanut butter','honey','vinegar','hot sauce','ranch','bbq sauce','taco seasoning','chicken broth','oatmeal','cereal'];
+    const names = state.shopCatalog.filter(c => !c.staple && STAPLES.includes(c.name.toLowerCase())).map(c => c.name);
+    const stamp = new Date().toISOString();
+    const { error } = await state.db.from('households').update({ staples_seeded_at: stamp }).eq('id', CONFIG.HOUSEHOLD_ID);
+    if (error) { console.warn('staples guard not writable yet (run migration 025)', error); return; }
+    state.household.staples_seeded_at = stamp;
+    if (names.length) {
+      await state.db.from('shopping_catalog').update({ staple: true })
+        .eq('household_id', CONFIG.HOUSEHOLD_ID).in('name', names);
+      for (const c of state.shopCatalog) if (names.includes(c.name)) c.staple = true;
+      toast(`Starred ${names.length} staple${names.length === 1 ? '' : 's'} — tap ★ on any ingredient to change.`);
+    }
   },
 
   /* A mistake, not a purchase: gone, and forgotten by the catalog so it is
@@ -757,13 +867,18 @@ function renderShopping(){
   $('#qa').classList.add('hide');
   const storeName = id => state.stores.find(s => s.id === id)?.name || 'Any store';
   const sel = state.shopStore;                       // null = everything
-  const items = state.shopItems.filter(i => !sel || i.store_id === sel);
+  /* A store chip shows that store's items AND the "any store" ones — milk
+     with no store is still milk, and Jess is standing in HEB. They sit in a
+     labelled block, walked in this store's aisle order as if they were here;
+     a tick moves them under the store for good. */
+  const items = state.shopItems.filter(i => !sel || i.store_id === sel || !i.store_id);
   const need = items.filter(i => !i.got), got = items.filter(i => i.got);
+  const anyCount = sel ? need.filter(i => !i.store_id).length : 0;
 
   // group by store when showing everything; the list is read in ONE store
   const groups = new Map();
   for (const it of need) {
-    const k = sel ? sel : (it.store_id || '');
+    const k = sel ? (it.store_id ? sel : 'any') : (it.store_id || '');
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(it);
   }
@@ -779,14 +894,22 @@ function renderShopping(){
     </li>`;
   };
 
-  const blocks = [...groups.entries()].map(([k, rows]) => {
-    rows.sort((a, b) => SHOP.order(k || null)(a) - SHOP.order(k || null)(b));
-    return `${sel ? '' : `<div class="ch" style="margin:14px 0 6px">${esc(storeName(k))}</div>`}
-      <ul class="shop-list">${rows.map(r => rowHtml(r, k || null)).join('')}</ul>`;
-  });
+  const blocks = [...groups.entries()]
+    .sort(([a], [b]) => (a === 'any') - (b === 'any'))          // the store's own first
+    .map(([k, rows]) => {
+      const walk = k === 'any' ? sel : (k || null);            // any-store rows walk this store's aisles
+      rows.sort((a, b) => SHOP.order(walk)(a) - SHOP.order(walk)(b));
+      const label = k === 'any' ? 'Any store' : (sel ? '' : storeName(k));
+      return `${label ? `<div class="ch" style="margin:14px 0 6px">${esc(label)}${k === 'any' ? ' <small>· tick to file under ' + esc(storeName(sel)) + '</small>' : ''}</div>` : ''}
+        <ul class="shop-list">${rows.map(r => rowHtml(r, walk)).join('')}</ul>`;
+    });
 
   const chips = [{ id: null, name: 'All' }, ...state.stores].map(s =>
     `<button class="chip${(s.id ?? null) === sel ? ' on' : ''}" data-store="${s.id ?? ''}">${esc(s.name)}</button>`).join('');
+  const recent = SHOP.recent();
+  const recentChips = recent.length
+    ? `<div class="chips" style="margin:8px 0 0">${recent.map(c =>
+        `<button type="button" class="chip" data-recent="${esc(c.name)}">+ ${esc(c.name)}</button>`).join('')}</div>` : '';
 
   const hasAisles = sel && state.shopAisles.some(a => a.store_id === sel);
 
@@ -797,7 +920,8 @@ function renderShopping(){
         <input id="shop-in" placeholder='Add: "milk eggs 2 lbs ground beef"' enterkeyhint="done">
         <button type="submit">Add</button>
       </form>
-      ${need.length ? `<div class="ch" style="margin-top:12px">${need.length} to get${sel && !hasAisles ? ' · no aisle map for this store yet' : ''}</div>` : ''}
+      ${recentChips}
+      ${need.length ? `<div class="ch" style="margin-top:12px">${need.length} to get${anyCount ? ` · ${anyCount} any store` : ''}${sel && !hasAisles ? ' · no aisle map for this store yet' : ''}</div>` : ''}
       ${need.length ? blocks.join('') : `<div class="soon" style="padding:26px 12px;margin-top:12px"><b>Nothing to get</b><span>Add something above, or text the family number.</span></div>`}
       ${got.length ? `<div class="ch" style="margin:14px 0 6px">Got · ${got.length}</div>
         <ul class="shop-list">${got.map(r => rowHtml(r, r.store_id)).join('')}</ul>` : ''}
@@ -811,6 +935,7 @@ function renderShopping(){
   $$('#bento [data-store]').forEach(b => b.onclick = () => { state.shopStore = b.dataset.store || null; render(); });
   $('#shop-add').onsubmit = async e => { e.preventDefault(); const v = $('#shop-in').value.trim(); if (!v) return; $('#shop-in').value = ''; await SHOP.add(v); };
   $$('#bento [data-tick]').forEach(b => b.onclick = () => SHOP.toggle(b.dataset.tick));
+  $$('#bento [data-recent]').forEach(b => b.onclick = () => SHOP.add(b.dataset.recent));
   $$('#bento [data-x]').forEach(b => b.onclick = () => SHOP.remove(b.dataset.x));
   const done = $('#shop-done'); if (done) done.onclick = () => SHOP.clear(sel, true);
   const clr = $('#shop-clear'); if (clr) clr.onclick = () => {
@@ -1222,6 +1347,7 @@ const MEAL = {
     }));
     state.meals = m.data || [];
     await MEAL.repairIngredients();
+    await DB.loadTodayMeal();
   },
 
   /* Rows saved by the old ingredient parser: ". black pepper" (a unit's full

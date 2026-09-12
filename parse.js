@@ -1251,10 +1251,16 @@ export function parseShopping(input, opts = {}) {
         if (!heardAs && tokFix) heardAs = tokFix.from;
 
         const category = catOf(name, opts.catalog);
+        /* Where this house last bought it. Kept apart from `store` (what the
+           text said) so a caller can rank an explicit store, then the chip
+           it is looking at, then this memory — and never mistake one for
+           the other. */
+        const known = (opts.catalog || []).find(c => c.name.toLowerCase() === name.toLowerCase());
         out.items.push({
           name, qty, heardAs,
           note: idx === chunks.length - 1 ? note : null,
           store: section.store || null,
+          catalogStore: known && known.store_id ? known.store_id : null,
           category, ...freshness(category)
         });
       });
@@ -1497,6 +1503,14 @@ export function routeIntent(body, opts = {}, from = 0) {
       const known = probe.items.filter(i => i.category !== 'other').length;
       if (probe.items.length >= 3 && known * 2 >= probe.items.length) return { intent: 'shop' };
     }
+    /* Not happening: a sick kid, a snow day, a parent away, one rehearsal
+       cancelled. Before the questions and before the remove/kill verbs at
+       stage 2 — "no school Friday" is not a shopping correction. */
+    const abs = absenceIntent(text, opts);
+    if (abs) return abs;
+    /* "dinner is leftovers" — the meal, said once. */
+    const din = dinnerIntent(text, opts);
+    if (din) return din;
     /* Questions. Before anything that can write a row: "anything
        Thursday?" was becoming an event titled "anything". */
     const ask = askIntent(text, opts);
@@ -2120,6 +2134,195 @@ export function parseSeason(text, opts = {}) {
     }
   }
   return out;
+}
+
+/* ===========================================================================
+ * 16. ABSENCES AND SKIPS
+ *
+ * The month's most common interruption is somebody not being where the
+ * calendar says: a sick kid, a snow day, a parent out of town, one rehearsal
+ * cancelled. Today the app makes it worse — the driver alert still fires at
+ * 3:15 for an orchestra nobody is going to. One grammar for "not happening":
+ *
+ *   Bryce is sick [today|tomorrow|<date>]       → absence, kind 'sick'
+ *   snow day / no school [Friday]               → absence, kind 'school_closed'
+ *   Erich is away Tue–Thu / I'm out of town …   → absence, kind 'away'
+ *   no orchestra Mar 9–13 / skip soccer Saturday / orchestra is cancelled
+ *                                               → skip_event
+ *   Bryce is fine / Bryce is back / school is on / cancel the skip
+ *                                               → unskip
+ *
+ * Ranges reuse the date grammar in parseQuickAdd for each end — "Tue–Thu",
+ * "Mar 9–13", "9/15-9/18", "through Friday", "this week" — there is no
+ * second date parser here. Default is today. "no <thing>" needs a date, or
+ * "no bike" would stop taking bike off the shopping list.
+ * ========================================================================= */
+
+const ABS_RE = {
+  SICK   : /^(.+?)\s+(?:is|are|'s|s)?\s*(?:home\s+sick|out\s+sick|sick|stayed\s+home|staying\s+home|home\s+today|out)(?:\s+(.*))?$/i,
+  SCHOOL : /^(?:snow\s+day|ice\s+day|no\s+school|school(?:'s|\s+is)?\s+(?:closed|cancelled|canceled|out|off))(?:\s+(.*))?$/i,
+  AWAY   : /^(.+?)\s*(?:is|are|am|'m|'s)?\s*(?:away|traveling|travelling|out\s+of\s+town|gone|on\s+a\s+trip)(?:\s+(.*))?$/i,
+  SKIP   : /^skip\s+(?:the\s+)?(.+?)$/i,
+  /* "no bike" takes bike off the shopping list and "cancel soccer" removes
+     the event; both keep their old meaning. WITH a date they mean one
+     occurrence: "no orchestra Friday", "cancel soccer Saturday". */
+  NO     : /^(?:no|cancel)\s+(?:the\s+)?(.+?)$/i,
+  OFF    : /^(.+?)\s+(?:is|are)\s+(?:cancelled|canceled|off|not\s+happening|not\s+on)(?:\s+(.*))?$/i,
+  FINE   : /^(.+?)\s+(?:is|are|'s|s)?\s*(?:fine|better|back|ok|okay|good|going\s+after\s+all|not\s+sick|at\s+school)(?:\s+(.*))?$/i,
+  UNSKIP : /^(?:cancel|undo|remove|drop)\s+(?:the\s+|that\s+)?skip$/i,
+  ON     : /^(?:never\s*mind|nvm|actually)[,\s]+(.+?)\s+is\s+(?:on|back\s+on|happening|back)(?:\s+(.*))?$/i,
+  SCHOOL_ON: /^school(?:'s|\s+is)?\s+(?:on|open|back|back\s+on)(?:\s+(.*))?$/i,
+  /* One end of a range, as people write it. */
+  RANGE  : /^(.+?)\s*(?:–|—|-|\bto\b|\bthrough\b|\bthru\b|\btil\b|\btill\b|\buntil\b)\s*(.+)$/i,
+  THROUGH: /^(?:through|thru|til|till|until|to)\s+(.+)$/i,
+  WEEK   : /^(?:this|all|the\s+whole|the\s+rest\s+of\s+the|rest\s+of\s+the|the)\s+week$/i,
+  NEXT_WEEK: /^next\s+week$/i,
+};
+
+const plusDays = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return ymd(x); };
+const dowOf   = d => new Date(d + 'T12:00:00').getDay();
+
+/* One date from a fragment, via the calendar grammar. An absence is about
+   NOW, so "Thursday" said on a Thursday is today, not next week. */
+function oneDate(fragment, now, base) {
+  const f = String(fragment || '').trim();
+  if (!f) return null;
+  /* A bare day number after "Mar 9–": same month as the left end. */
+  if (base && /^\d{1,2}$/.test(f)) {
+    const d = new Date(base + 'T12:00:00'); d.setDate(+f);
+    return d.getDate() === +f ? ymd(d) : null;
+  }
+  const q = parseQuickAdd(f, { members: [], now: base ? new Date(base + 'T12:00:00') : now });
+  if (!q.matched.includes('date')) return null;
+  if (q.title && q.title !== 'Untitled') return null;
+  return q.alsoToday || q.date;
+}
+
+/* "", "today", "Friday", "Tue–Thu", "Mar 9–13", "through Friday", "this
+   week" → { from, to } or null when the tail is not about dates at all. */
+export function dateRange(tail, opts = {}) {
+  const now = opts.now || new Date();
+  const today = ymd(now);
+  const t = String(tail || '').trim().replace(/^(?:on|for|from)\s+/i, '');
+  if (!t) return { from: today, to: today };
+  let m;
+  if (ABS_RE.WEEK.test(t))      return { from: today, to: plusDays(today, 7 - dowOf(today)) };
+  if (ABS_RE.NEXT_WEEK.test(t)) { const mon = plusDays(today, 8 - (dowOf(today) || 7)); return { from: mon, to: plusDays(mon, 6) }; }
+  if ((m = t.match(ABS_RE.THROUGH))) {
+    const to = oneDate(m[1], now);
+    return to ? { from: today, to } : null;
+  }
+  if ((m = t.match(ABS_RE.RANGE))) {
+    const from = oneDate(m[1], now);
+    const to   = from ? oneDate(m[2], now, from) : null;
+    /* The grammar rolls a past date to next year; "9/18-9/15" would become
+       a year-long absence. No absence is that long. */
+    if (from && to && to >= from && (new Date(to) - new Date(from)) < 120 * 86400000) return { from, to };
+    return null;
+  }
+  const d = oneDate(t, now);
+  return d ? { from: d, to: d } : null;
+}
+
+/* Who, from the front of a sentence. "I" / "I'm" is the sender. */
+function absWho(fragment, opts) {
+  const f = String(fragment || '').trim();
+  if (/^(?:i|i'm|im|me)$/i.test(f)) return opts.me ? [opts.me] : [];
+  const lead = leadingNames(f + ' x', opts.members || []);
+  return lead && lead.rest === 'x' ? lead.names : whoIn(f, opts.members || []).length && f.split(/\s+/).length <= 3 ? whoIn(f, opts.members || []) : [];
+}
+
+/* opts: { members, now, me }. Returns an absence / skip / unskip intent or null. */
+export function absenceIntent(body, opts = {}) {
+  const text = String(body || '').trim().replace(/[.!]+$/, '');
+  let m, r;
+
+  if ((m = text.match(ABS_RE.SCHOOL))) {
+    r = dateRange(m[1], opts);
+    if (r) return { intent: 'absence', who: null, kind: 'school_closed', ...r };
+  }
+  if ((m = text.match(ABS_RE.SCHOOL_ON))) {
+    r = dateRange(m[1], opts);
+    if (r) return { intent: 'unskip', who: null, kind: 'school_closed', ...r };
+  }
+  if (ABS_RE.UNSKIP.test(text)) return { intent: 'unskip', who: null, title: null, last: true };
+  if ((m = text.match(ABS_RE.ON))) {
+    r = dateRange(m[2], opts);
+    if (r) return { intent: 'unskip', who: null, title: m[1].trim(), ...r };
+  }
+
+  /* People first: "Bryce is sick" / "Erich is away Tue–Thu" / "Bryce is fine".
+     The name must be the whole front of the sentence, and the tail must be
+     a date or nothing — "Bryce is sick of soccer" is a complaint. */
+  if ((m = text.match(ABS_RE.AWAY))) {
+    const who = absWho(m[1], opts); r = dateRange(m[2], opts);
+    if (who.length && r) return { intent: 'absence', who: who[0], kind: 'away', ...r };
+  }
+  if ((m = text.match(ABS_RE.SICK))) {
+    const who = absWho(m[1], opts); r = dateRange(m[2], opts);
+    if (who.length && r) return { intent: 'absence', who: who[0], kind: 'sick', ...r };
+  }
+  if ((m = text.match(ABS_RE.FINE))) {
+    const who = absWho(m[1], opts); r = dateRange(m[2], opts);
+    if (who.length && r) return { intent: 'unskip', who: who[0], title: null, ...r };
+  }
+
+  /* Events: "skip soccer Saturday", "orchestra is cancelled", "no orchestra
+     Mar 9–13". The date is peeled off the end; what is left is the title. */
+  const titleAndRange = (rest, needDate) => {
+    const words = rest.trim().split(/\s+/);
+    for (let i = 1; i < words.length; i++) {
+      const rr = dateRange(words.slice(i).join(' '), opts);
+      if (rr) return { title: words.slice(0, i).join(' '), ...rr };
+    }
+    if (needDate) return null;
+    const today = ymd(opts.now || new Date());
+    return { title: rest.trim(), from: today, to: today };
+  };
+  if ((m = text.match(ABS_RE.OFF))) {
+    r = dateRange(m[2], opts);
+    if (r) return { intent: 'skip_event', title: m[1].trim(), ...r };
+  }
+  if ((m = text.match(ABS_RE.SKIP))) {
+    const x = titleAndRange(m[1], false);
+    if (x && x.title) return { intent: 'skip_event', ...x };
+  }
+  if ((m = text.match(ABS_RE.NO))) {
+    const x = titleAndRange(m[1], true);
+    if (x && x.title) return { intent: 'skip_event', ...x };
+  }
+  return null;
+}
+
+/* ===========================================================================
+ * 17. DINNER BY TEXT
+ *
+ * "dinner is leftovers" is the Wednesday message. It is a statement about
+ * the meal, not an appointment: "dinner is at 6" and "dinner at grandma's
+ * Sunday" carry a clock or a place and stay events. The dish is matched to
+ * a saved recipe by the handler; here it is just words and a day.
+ * ========================================================================= */
+const DINNER_RE = {
+  IS     : /^(?:dinner|supper|tonight)(?:\s+(tonight|today|tomorrow|tmrw|(?:on\s+)?(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?))?\s*(?:is|:|=|will\s+be|-|—|—)\s*(.+)$/i,
+  HAVING : /^(?:we'?re|we\s+are|were)\s+(?:having|doing|eating|making)\s+(.+?)(?:\s+(?:for\s+dinner|for\s+supper))?(?:\s+(tonight|today|tomorrow|tmrw))?$/i,
+};
+
+export function dinnerIntent(body, opts = {}) {
+  const text = String(body || '').trim().replace(/[.!]+$/, '');
+  const now = opts.now || new Date();
+  let m, dayWord = null, dish = null;
+  if ((m = text.match(DINNER_RE.IS)))          { dayWord = m[1] || (/^tonight/i.test(text) ? 'tonight' : null); dish = m[2]; }
+  else if ((m = text.match(DINNER_RE.HAVING))) { dish = m[1]; dayWord = m[2] || null; }
+  if (!dish) return null;
+  dish = dish.trim().replace(/^(?:going\s+to\s+be|gonna\s+be)\s+/i, '');
+  /* A clock in the dish makes it an appointment, not a menu. */
+  const q = parseQuickAdd(dish, { members: [], now });
+  if (q.matched.includes('time')) return null;
+  if (q.matched.includes('date') && (!q.title || q.title === 'Untitled')) return null;
+  const date = dayWord ? (oneDate(dayWord.replace(/^on\s+/i, ''), now) || ymd(now)) : ymd(now);
+  const clean = dish.replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+  return { intent: 'dinner', dish: clean, date };
 }
 
 /* Split a pasted block into ingredient lines. Headings like "For the sauce:"
