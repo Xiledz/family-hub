@@ -20,7 +20,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
 
-const BUILD = '2026-09-12b-m1';
+const BUILD = '2026-09-12e-m2';
 
 const db = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -319,6 +319,57 @@ async function dinnerNudge(house: any, tz: string, now: any, opts: any) {
   return Response.json({ build: BUILD, mode: 'dinner', sent: res.ok, to: cook.name, via: res.channel, detail: res.detail });
 }
 
+/* Sunday 10am: one message to the default cook with last week's dinners as
+   the suggestion. Skipped when the week ahead already has four planned. */
+function weekAhead(todayYmd: string) {
+  const t = new Date(todayYmd + 'T12:00:00Z');
+  const dow = t.getUTCDay();
+  const mon = new Date(t); mon.setUTCDate(t.getUTCDate() + (dow === 0 ? 1 : 8 - dow));
+  const days: string[] = [];
+  for (let i = 0; i < 7; i++) { const d = new Date(mon); d.setUTCDate(mon.getUTCDate() + i); days.push(d.toISOString().slice(0, 10)); }
+  return days;
+}
+const DOW3 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+async function sundayNudge(house: any, tz: string, now: any, opts: any) {
+  if (!opts.force && !(now.h === 10 && now.weekday === 'Sunday')) {
+    return Response.json({ build: BUILD, mode: 'sunday', skipped: 'outside window', local: `${now.weekday} ${now.h}:${now.m}` });
+  }
+  const cookId = house?.default_cook_id;
+  if (!cookId) return Response.json({ build: BUILD, mode: 'sunday', skipped: 'no default cook' });
+
+  const ahead = weekAhead(now.date);
+  const back  = ahead.map((d: string) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - 7); return x.toISOString().slice(0, 10); });
+  const { data: planned } = await db.from('meal_plan').select('plan_date')
+    .eq('household_id', house.id).eq('slot', 'dinner').is('deleted_at', null)
+    .gte('plan_date', ahead[0]).lte('plan_date', ahead[6]);
+  if ((planned?.length ?? 0) >= 4) return Response.json({ build: BUILD, mode: 'sunday', skipped: 'week already planned', planned: planned!.length });
+
+  const { data: last } = await db.from('meal_plan').select('plan_date, freeform, recipes(name)')
+    .eq('household_id', house.id).eq('slot', 'dinner').is('deleted_at', null)
+    .gte('plan_date', back[0]).lte('plan_date', back[6]).order('plan_date');
+  const lastLine = (last ?? []).map((m: any) =>
+    `${DOW3[new Date(m.plan_date + 'T12:00:00Z').getUTCDay()]} ${m.recipes?.name || m.freeform || 'Dinner'}`).join(' · ');
+
+  const { data: cook } = await db.from('members').select('id, name, phone, notify_via_member_id')
+    .eq('id', cookId).maybeSingle();
+  if (!cook) return Response.json({ build: BUILD, mode: 'sunday', skipped: 'cook missing' });
+
+  const text = `Plan this week's dinners?` +
+    (lastLine ? ` Last week: ${lastLine}. Reply "same as last week" or plan in the app.` : ` Plan in the app, or text "dinner is …" each day.`);
+  if (opts.dry) return Response.json({ build: BUILD, mode: 'sunday', would_send: text, to: cook.name });
+
+  const { error } = await db.from('nudge_log').insert({ kind: 'sunday', for_date: now.date, member_id: cook.id });
+  if (error) return Response.json({ build: BUILD, mode: 'sunday', skipped: 'already sent', detail: error.message });
+
+  const res = await deliver(db, ENV, cook, {
+    householdId: house.id, title: 'This week', body: text, kind: 'nag',
+    refId: null, tag: `sp-${now.date}`, url: './index.html'
+  });
+  console.log('sunday-plan build=' + BUILD + ' ' + JSON.stringify({ to: cook.name, ok: res.ok, via: res.channel }));
+  return Response.json({ build: BUILD, mode: 'sunday', sent: res.ok, to: cook.name, via: res.channel, detail: res.detail });
+}
+
 Deno.serve(async (req) => {
   if (!SECRET || req.headers.get('x-digest-secret') !== SECRET) {
     return new Response('Not found', { status: 404 });
@@ -335,6 +386,7 @@ Deno.serve(async (req) => {
      wakes it hourly 20–23 UTC with {"mode":"dinner"}; it is 4pm on a weekday
      here or it is nothing. */
   if (opts.mode === 'dinner') return await dinnerNudge(house, tz, now, opts);
+  if (opts.mode === 'sunday') return await sundayNudge(house, tz, now, opts);
 
   const inWindow = (now.h > SEND_FROM.h || (now.h === SEND_FROM.h && now.m >= SEND_FROM.m))
                 && (now.h < SEND_UNTIL.h || (now.h === SEND_UNTIL.h && now.m < SEND_UNTIL.m));
@@ -385,10 +437,20 @@ Deno.serve(async (req) => {
      exactly as materialize_meal_reminders resolves it: the meal's cook, else
      the household default, else whoever planned it. */
   const { data: meal } = await db.from('meal_plan')
-    .select('id, ready_by, freeform, cook_id, created_by, recipes(name)')
+    .select('id, ready_by, freeform, cook_id, created_by, headcount_override, recipes(name)')
     .eq('household_id', house!.id).eq('plan_date', now.date).eq('slot', 'dinner')
     .is('deleted_at', null).is('done_at', null).maybeSingle();
   const cookId = meal ? (meal.cook_id ?? house!.default_cook_id ?? meal.created_by ?? null) : null;
+  /* "(3 home — Addie at Church 6:30)" when not everyone is at the table. */
+  let homeNote = '';
+  if (meal) {
+    const { data: rows } = await db.rpc('home_for_dinner', { p_household: house!.id, p_date: now.date });
+    if (rows?.length) {
+      const out = rows.filter((r: any) => !r.home).map((r: any) => `${r.name} ${r.why || 'out'}`);
+      const n = (meal as any).headcount_override ?? rows.filter((r: any) => r.home).length;
+      if (out.length || n !== rows.length) homeNote = ` (${n} home${out.length ? ` — ${out.join(', ')}` : ''})`;
+    }
+  }
   let cookName = '';
   if (cookId) {
     const { data: c } = await db.from('members').select('name').eq('id', cookId).maybeSingle();
@@ -408,7 +470,7 @@ Deno.serve(async (req) => {
     }
     const who = cookName ? ` — ${cookName === m.name ? 'you cook' : `${cookName} cooks`}` : '';
     const by  = meal.ready_by ? `${who ? ',' : ' —'} on the table by ${clock12(meal.ready_by)}` : '';
-    return `Dinner: ${dish}${who}${by}${first}`;
+    return `Dinner: ${dish}${who}${by}${homeNote}${first}`;
   };
 
   /* Due today and overdue, from the list. The digest IS the nag. */

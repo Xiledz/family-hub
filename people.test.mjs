@@ -1,4 +1,4 @@
-import { parseQuickAdd } from './parse.js';
+import { parseQuickAdd, roleVerb, castLine, toggleCastRole } from './parse.js';
 const NOW = new Date(2026, 7, 24, 14, 0);            // Monday 24 Aug 2026, 2pm
 const M = ['Erich','Jess','Addie','Bryce'];
 const P = t => parseQuickAdd(t, { members: M, now: NOW, defaultLead: 30, me: 'Erich' });
@@ -54,6 +54,24 @@ eq('with recurrence days', full.repeat && full.repeat.days, [1,3]);
 eq('with recurrence people', full.people.map(p=>p.name+':'+p.role).sort(), ['Bryce:going','Jess:driving']);
 eq('with recurrence title', full.title, 'Soccer');
 eq('with recurrence lead', full.leadMinutes, 30);
+
+
+/* --- the cast, said out loud (shared by the app's cards and the text number) --- */
+eq('roleVerb driving',  roleVerb('Jess', 'driving'),  'Jess drives');
+eq('roleVerb dropoff',  roleVerb('Erich', 'dropoff'), 'Erich takes them');
+eq('roleVerb pickup',   roleVerb('Erich', 'pickup'),  'Erich brings them back');
+eq('roleVerb going',    roleVerb('Addie', 'going'),   'Addie');
+eq('castLine compact',  castLine([{ name: 'Addie', role: 'going' }, { name: 'Jess', role: 'driving' }]), 'Addie · Jess drives');
+eq('castLine two going', castLine([{ name: 'Addie', role: 'going' }, { name: 'Bryce', role: 'going' }, { name: 'Erich', role: 'pickup' }]), 'Addie, Bryce · Erich brings them back');
+eq('castLine empty',    castLine([]), '');
+
+/* --- editing a cast: one presence role, plus at most one ride role --- */
+eq('going + a ride',        toggleCastRole(['going'], 'driving'),            ['going', 'driving']);
+eq('rides replace rides',   toggleCastRole(['going', 'driving'], 'pickup'),  ['going', 'pickup']);
+eq('presence replaces presence', toggleCastRole(['going'], 'helping'),      ['helping']);
+eq('a ride alone is fine',  toggleCastRole([], 'driving'),                   ['driving']);
+eq('toggle off',            toggleCastRole(['going', 'driving'], 'going'),   ['driving']);
+eq('toggle the ride off',   toggleCastRole(['going', 'driving'], 'driving'), ['going']);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

@@ -349,5 +349,150 @@ eq('verb only warns', P('buy').warnings.length > 0, true);
   eq('the text\'s store still wins', [r2.items[0].store.id, r2.items[0].catalogStore], ['k', 'h']);
 }
 
+/* =====================================================================
+   REGRESSION NET — "butter sticks" came out as butter + sticks.
+   Three roots, all in the splitter/classifier: (1) a known item followed
+   by its SHAPE word closed the chunk and the shape became an orphan item;
+   (2) a bare shape word in front of "of" was not a quantity; (3) the
+   category table was first-match-wins, so a generic word in an early row
+   ("butter" → dairy) beat a specific phrase in a later one ("peanut
+   butter" → pantry). Plus the mirror class: one unknown word in front of a
+   known one ("coconut oil") split. These two tables are what stop the
+   class coming back: everything in ONE must stay one item with the aisle
+   named; everything in SPLIT must come apart into exactly those items.
+   ===================================================================== */
+const ONE = [
+  ['butter sticks',        'butter sticks',        'dairy'],
+  ['cheese slices',        'cheese slices',        'dairy'],
+  ['sour cream',           'sour cream',           'dairy'],
+  ['cream cheese',         'cream cheese',         'dairy'],
+  ['ice cream',            'ice cream',            'frozen'],
+  ['peanut butter',        'peanut butter',        'pantry'],
+  ['almond milk',          'almond milk',          'dairy'],
+  ['butter lettuce',       'butter lettuce',       'produce'],
+  ['chicken broth',        'chicken broth',        'canned'],
+  ['beef broth',           'beef broth',           'canned'],
+  ['egg noodles',          'egg noodles',          'pantry'],
+  ['milk chocolate',       'milk chocolate',       'snacks'],
+  ['string cheese',        'string cheese',        'dairy'],
+  ['cottage cheese',       'cottage cheese',       'dairy'],
+  ['heavy cream',          'heavy cream',          'dairy'],
+  ['whipping cream',       'whipping cream',       'dairy'],
+  ['half and half',        'half and half',        'dairy'],
+  ['hot dog buns',         'hot dog buns',         'bakery'],
+  ['tortilla chips',       'tortilla chips',       'snacks'],
+  ['potato chips',         'potato chips',         'snacks'],
+  ['sweet potatoes',       'sweet potatoes',       'produce'],
+  ['green onions',         'green onions',         'produce'],
+  ['bell peppers',         'bell peppers',         'produce'],
+  ['baking powder',        'baking powder',        'baking'],
+  ['brown sugar',          'brown sugar',          'baking'],
+  ['powdered sugar',       'powdered sugar',       'baking'],
+  ['olive oil',            'olive oil',            'pantry'],
+  ['coconut oil',          'coconut oil',          'pantry'],
+  ['paper towels',         'paper towels',         'paper'],
+  ['toilet paper',         'toilet paper',         'paper'],
+  ['toilet paper rolls',   'toilet paper rolls',   'paper'],
+  ['dish soap',            'dish soap',            'cleaning'],
+  ['laundry detergent',    'laundry detergent',    'cleaning'],
+  ['dryer sheets',         'dryer sheets',         'cleaning'],
+  ['chicken thighs',       'chicken thighs',       'meat'],
+  ['chicken wings',        'chicken wings',        'meat'],
+  ['ground turkey',        'ground turkey',        'meat'],
+  ['pork chops',           'pork chops',           'meat'],
+  ['ham steaks',           'ham steaks',           'meat'],
+  ['bread crumbs',         'bread crumbs',         'pantry'],
+  ['ice cream cones',      'ice cream cones',      'frozen'],
+  ['coffee filters',       'coffee filters',       'household'],
+  ['trash bags',           'trash bags',           'household'],
+  ['cream of mushroom soup','cream of mushroom soup','canned'],
+  ['chicken noodle soup',  'chicken noodle soup',  'canned'],
+  ['cream of tartar',      'cream of tartar',      'baking'],
+  ['ranch seasoning mix',  'ranch seasoning mix',  'condiments'],
+  ['buttermilk pancake mix','buttermilk pancake mix','breakfast'],
+  ['milk jug',             'milk jug',             'dairy'],
+  ['egg carton',           'egg carton',           'eggs'],
+  ['bread loaf',           'bread loaf',           'bakery'],
+  ['fresh basil',          'fresh basil',          'produce'],
+  ['organic milk',         'organic milk',         'dairy'],
+  ['sweet corn',           'sweet corn',           'canned'],
+  ['large eggs',           'large eggs',           'eggs'],
+];
+for (const [text, name, cat] of ONE) {
+  const items = P(text).items;
+  eq(`one item: ${text}`, items.map(i => `${i.name}[${i.category}]`), [`${name}[${cat}]`]);
+}
+/* Quantities said as a shape. */
+const QTY = [
+  ['sticks of butter',      'butter', 'sticks',      'dairy'],
+  ['2 sticks of butter',    'butter', '2 sticks',    'dairy'],
+  ['a box of pasta',        'pasta',  'a box',       'pantry'],
+  ['loaf of bread',         'bread',  'loaf',        'bakery'],
+  ['bag of chips',          'chips',  'bag',         'snacks'],
+  ['head of lettuce',       'lettuce','head',        'produce'],
+  ['a bunch of bananas',    'bananas','a bunch',     'produce'],
+  ['dozen eggs',            'eggs',   'dozen',       'eggs'],
+  ['half a dozen eggs',     'eggs',   'half a dozen','eggs'],
+];
+for (const [text, name, qty, cat] of QTY) {
+  const it = P(text).items;
+  eq(`quantity: ${text}`, it.map(i => [i.name, i.qty, i.category]), [[name, qty, cat]]);
+}
+/* And these must still come apart into exactly these. */
+const SPLIT = [
+  ['milk eggs bread',                  ['milk', 'eggs', 'bread']],
+  ['butter sticks and milk',           ['butter sticks', 'milk']],
+  ['milk and toilet paper',            ['milk', 'toilet paper']],
+  ['tide charmin',                     ['tide', 'charmin']],
+  ['milk eggs 2 pounds of ground beef',['milk', 'eggs', 'ground beef']],
+  ['doritos milk eggs',                ['doritos', 'milk', 'eggs']],
+  ['eggs bacon',                       ['eggs', 'bacon']],
+  ['bananas milk',                     ['bananas', 'milk']],
+  ['chicken thighs and rice',          ['chicken thighs', 'rice']],
+  ['pork chops and milk',              ['pork chops', 'milk']],
+  ['sticks of butter, milk',           ['butter', 'milk']],
+  ['cheese slices bread',              ['cheese slices', 'bread']],
+  ['apples oranges bananas',           ['apples', 'oranges', 'bananas']],
+  ['peanut butter and jelly',          ['peanut butter', 'jelly']],
+  ['coconut oil and olive oil',        ['coconut oil', 'olive oil']],
+  ['butter lettuce tomatoes',          ['butter lettuce', 'tomatoes']],
+];
+for (const [text, want] of SPLIT) eq(`split: ${text}`, names(text), want);
+/* A measure or shape word alone is nothing to buy: dropped, with a warning.
+   (The app also sweeps any such rows the old bug wrote.) */
+eq('bare shape word is not an item',   names('sticks'), []);
+eq('bare measure word is not an item', names('cup'), []);
+eq('...and says why', P('cup').warnings[0], 'nothing to buy in "cup"');
+/* Cups that are things still land on the paper aisle. */
+eq('paper cups',  cats('paper cups'),  ['paper']);
+eq('solo cups',   cats('solo cups'),   ['paper']);
+eq('coffee cups', cats('coffee cups'), ['paper']);
+eq('coffee cups is one item', names('coffee cups'), ['coffee cups']);
+
+/* ROOT 2, the whole class: every measure × {bare, article, number} ×
+   {of X, X}. One unified list (UNIT_WORDS ∪ FORM_WORDS) feeds the
+   splitter, the ingredient parser and isFormOnly, so "gallon of milk"
+   can never again be an item called "gallon of". */
+const MEASURES = ['gallon','quart','pint','pound','lb','ounce','oz','case','cup','carton','jug','six pack','bag','box','can','jar','bottle','bunch','head','loaf','stick','slice'];
+const plural = w => w === 'box' ? 'boxes' : w === 'bunch' ? 'bunches' : w === 'loaf' ? 'loaves' : w === 'lb' ? 'lbs' : w === 'oz' ? 'oz' : w + 's';
+for (const w of MEASURES) {
+  const one = P(`${w} of milk`).items, art = P(`a ${w} of milk`).items;
+  eq(`${w} of milk`,        one.map(i => [i.name, i.qty]), [['milk', w]]);
+  eq(`a ${w} of milk`,      art.map(i => [i.name, i.qty]), [['milk', `a ${w}`]]);
+  eq(`${w} milk (no of)`,   P(`${w} milk`).items.map(i => [i.name, i.qty]), [['milk', w]]);
+  if (w === 'six pack') continue;                      // nobody says "2 six packs"
+  eq(`2 ${plural(w)} of milk`, P(`2 ${plural(w)} of milk`).items.map(i => [i.name, i.qty]), [['milk', `2 ${plural(w)}`]]);
+  eq(`2 ${plural(w)} milk`, P(`2 ${plural(w)} milk`).items.map(i => [i.name, i.qty]), [['milk', `2 ${plural(w)}`]]);
+}
+/* A measure word is never "repaired" into a brand: "loaves" is not Luvs. */
+eq('loaves is not Luvs', P('2 loaves of bread').items.map(i => [i.name, i.qty, i.heardAs]), [['bread', '2 loaves', null]]);
+/* A measure in front of something unknown is left alone — "can opener"
+   is a can opener. */
+eq('can opener keeps its can', P('can opener').items.map(i => i.name), ['can opener']);
+/* Most-specific category wins, table order only breaks ties. */
+eq('scoring: phrase beats word',   cats('peanut butter'), ['pantry']);
+eq('scoring: longer phrase wins',  cats('ranch seasoning mix'), ['condiments']);
+eq('scoring: tie keeps table order', cats('ground beef'), ['meat']);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -33,13 +33,18 @@ minutes to set up. Nothing to download from the App Store.
 ## 2. Using the app
 
 - **Type things the way you'd say them.** Each tab has its own box at the top.
-- **Calendar** — everyone's, live. Box at the top: `Soccer Thursday 5:30 Bryce`,
+- **Calendar** — everyone's, live; tap a name above the day/week/month to see
+  just that person's. Box at the top: `Soccer Thursday 5:30 Bryce`,
   `Dentist tomorrow 9am Addie`. Tap an event to change it or tick it off.
   **A whole season at once:** copy the schedule (one date per line, with a
   first line like `Orchestra — Addie, Jess driving`) and paste it into that
   box — you get one list to check and one **Add** button. Same by text.
 - **Shopping** — one shared list. Box: `milk, eggs, paper towels`. Tick things
   as you put them in the cart, then **Done shopping** when you're done.
+  **Sales:** copy the store's weekly ad or digital-coupon page and paste it
+  (**Paste a weekly ad**, or straight into the box) — anything on your list
+  that's on sale gets a tag, coupons get a **Clip** link to the store's page,
+  and things you usually buy that are on sale show up under the list.
 - **To-do** — a list per person, dragged into whatever order you want. Box:
   `Bryce take out the trash every Tuesday`. Tap the circle when it's done. A
   chore that repeats comes back on its own; a missed one shows **Missed**.
@@ -67,6 +72,8 @@ Text the family number: **`(936) 297-5103`**
 | What's happening | `what's Thursday` — or `anything tomorrow?` |
 | Who's driving | `who's driving Addie Monday` |
 | Dinner | `what's for dinner` — or set it: `dinner is leftovers`, `we're having tacos` |
+| How many for dinner | `Addie's at church, 3 for dinner` · `dinner for 3` (the app counts from the calendar on its own) |
+| Plan the week like last week | `same as last week` (Sunday morning the app asks) |
 | Did someone buy it | `did Jess get the milk` |
 | A whole schedule | paste it, one date per line, first line `Orchestra — Addie, Jess driving`; reply `1` to add all |
 | Someone's sick / a snow day | `Bryce is sick` · `snow day` · `no school Friday` — his things are skipped and the alerts stop |

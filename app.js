@@ -4,7 +4,8 @@
  * ==========================================================================*/
 import { CONFIG, isDemo } from './config.js';
 import { parseQuickAdd, describe, parseShopping, parseTodo, parseIngredient, splitIngredientBlock,
-         parseSeason, looksLikeSeason, splitSeasonLines } from './parse.js';
+         parseSeason, looksLikeSeason, splitSeasonLines, parseAd, looksLikeAd,
+         roleVerb, castLine, toggleCastRole, FORM_WORDS, isFormOnly } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
 
 const $  = s => document.querySelector(s);
@@ -26,7 +27,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-12b';
+const APP_BUILD = '2026-09-12f';
 
 const state = {
   db: null, demo: isDemo(),
@@ -154,6 +155,7 @@ const DB = {
       .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('plan_date', ymd(new Date())).eq('slot', 'dinner')
       .is('deleted_at', null).maybeSingle();
     state.todayMeal = data || null;
+    state.todayHome = await MEAL.homeFor(ymd(new Date()));
   },
 
   async saveEvent(e){
@@ -297,10 +299,12 @@ function whoOf(e, withRoles = false){
   if (!cast.length) return memberOf(e.member_id)?.name || 'No one yet';
   const all = state.members.length && cast.length === state.members.length;
   if (all && !withRoles) return 'Everyone';
-  return cast.map(c => {
-    const n = memberOf(c.member_id)?.name || '?';
-    return withRoles && c.role !== 'going' ? `${n} · ${ROLE_SAY[c.role] ?? c.role}` : n;
-  }).join(', ');
+  if (!withRoles) return cast.map(c => memberOf(c.member_id)?.name || '?').join(', ');
+  /* "Addie · Jess drives" — the same words the text number uses (castLine
+     in parse.js), so a card and a reply never describe a ride two ways. */
+  const named = cast.map(c => ({ name: memberOf(c.member_id)?.name || '?', role: c.role }));
+  if (all && named.every(c => c.role === 'going')) return 'Everyone';
+  return castLine(named);
 }
 const dateOf   = e  => e.all_day ? e.event_date : ymd(new Date(e.starts_at));
 
@@ -441,6 +445,15 @@ function enter(){
   initPush();
 }
 
+/* "so Addie makes 6:30 Church" — why dinner is at the time it is. */
+function anchorNote(m){
+  if (!m?.anchor_event_id || !m.anchor_date) return '';
+  const ev = onDay(m.anchor_date).find(e => e.id === m.anchor_event_id);
+  if (!ev) return '';
+  const who = (ev.people || []).filter(x => x.role === 'going').map(x => memberOf(x.member_id)?.name).filter(Boolean);
+  return ` · so ${esc(who.join(' and ') || 'everyone')} make${who.length === 1 ? 's' : ''} ${esc(timeOf(ev))} ${esc(ev.title)}`;
+}
+
 /* Tonight's dinner on the Today card: the dish, who cooks, when it is on
    the table — or the one link that fixes "what's for dinner?" */
 function dinnerLine(){
@@ -452,6 +465,7 @@ function dinnerLine(){
   const bits = [esc(dish)];
   if (cook) bits.push(`${esc(cook.name)} cooks`);
   if (m.ready_by) bits.push(`on the table by ${clock12(m.ready_by)}`);
+  if (state.todayHome) bits.push(`${state.todayHome.n} home`);
   return `<div class="tdinner${m.done_at ? ' mdone' : ''}"><span class="tdlabel">Dinner</span> <button type="button" class="link" data-meal-today="${m.id}">${bits.join(' · ')}</button></div>`;
 }
 
@@ -526,7 +540,7 @@ function render(){
             <button class="tick" data-evtick="${e.id}" aria-label="Done">${EV.isDone(e) ? '✓' : ''}</button>
             <button class="trowbody" data-ev="${e.id}">
               <span class="ttime">${timeOf(e)}</span>
-              <span class="body"><span class="ttitle">${esc(e.title)}</span><span class="twho">${esc(whoOf(e))}</span></span>
+              <span class="body"><span class="ttitle">${esc(e.title)}</span><span class="twho">${esc(whoOf(e, true))}</span></span>
               ${e.lead_minutes != null ? `<span class="bell" title="Reminder ${leadLabel(e.lead_minutes)} before">&#9201;</span>` : ''}
             </button>
           </div>`).join('')
@@ -561,7 +575,7 @@ function render(){
         ${upcoming.length ? upcoming.map(e => { const d = new Date(dateOf(e)+'T12:00:00');
           return `<button class="up" data-ev="${e.id}">
             <span class="upd"><i>${DOW[d.getDay()]}</i><b>${d.getDate()}</b></span>
-            <span class="body"><span class="upt">${esc(e.title)}</span><span class="upm">${timeOf(e)} · ${esc(whoOf(e))}</span></span>
+            <span class="body"><span class="upt">${esc(e.title)}</span><span class="upm">${timeOf(e)} · ${esc(whoOf(e, true))}</span></span>
             <span class="dot" style="background:${colorOf(e.member_id)}"></span>
           </button>`; }).join('')
         : `<div class="empty">Nothing scheduled yet.</div>`}
@@ -591,12 +605,34 @@ const pill = (e) => `<button class="pill" data-occ="${e.id}|${e.occurrence_date}
   <span class="pt">${timeOf(e)}</span>
   <span class="pb"><span class="pn">${esc(e.title)}${e.is_occurrence
       ? `<span class="rep" title="${esc(describeRepeat(e)||'Repeats')}">&#8635;</span>` : ''}</span>
-    <span class="pw">${esc(whoOf(e))}</span></span>
+    <span class="pw">${esc(whoOf(e, true))}</span></span>
   ${e.lead_minutes != null ? `<span class="bell">&#9201;</span>` : ''}
 </button>`;
 
+/* Whose calendar. One chip row above the day / week / month views; the
+   Today card is the house's day and ignores it. Remembered per device. */
+const PERSON_KEY = 'fh.person';
+const getPerson = () => { try { return localStorage.getItem(PERSON_KEY) || null; } catch { return null; } };
+const setPerson = id => { try { if (id) localStorage.setItem(PERSON_KEY, id); else localStorage.removeItem(PERSON_KEY); } catch {} };
+if (state.personFilter === undefined) state.personFilter = getPerson();
+/* On the cast in any role, or a household-wide event (nobody named). */
+function filterPeople(list){
+  const who = state.personFilter;
+  if (!who || !state.members.some(m => m.id === who)) return list;
+  return list.filter(e => {
+    const cast = e.people || [];
+    if (cast.length) return cast.some(c => c.member_id === who);
+    return !e.member_id || e.member_id === who;
+  });
+}
+function personChips(){
+  const cur = state.personFilter && state.members.some(m => m.id === state.personFilter) ? state.personFilter : null;
+  return `<div class="chips pfilter">${[{ id: null, name: 'All', color: EVERYONE }, ...state.members].map(m =>
+    `<button type="button" class="chip${(m.id ?? null) === cur ? ' on' : ''}" data-person="${m.id ?? ''}"><span class="dot" style="background:${m.color}"></span>${esc(m.name)}</button>`).join('')}</div>`;
+}
+
 function navBar(label){
-  return `<div class="cal-nav">
+  return personChips() + `<div class="cal-nav">
     <button data-nav="-1" aria-label="Previous">&#8249;</button>
     <button data-nav="0" class="today">Today</button>
     <button data-nav="1" aria-label="Next">&#8250;</button>
@@ -611,7 +647,7 @@ function renderMonth(){
   const gridStart = addDaysS(mStart, -lead);
   const cells = [];
   for (let i = 0; i < 42; i++) cells.push(addDaysS(gridStart, i));
-  const evs = eventsBetween(cells[0], cells[41]);
+  const evs = filterPeople(eventsBetween(cells[0], cells[41]));
   const byDate = new Map();
   for (const e of evs) { if(!byDate.has(e.event_date)) byDate.set(e.event_date, []); byDate.get(e.event_date).push(e); }
 
@@ -642,7 +678,7 @@ function renderMonth(){
 function renderWeek(){
   const ws = startOfWeek(state.cursor);
   const days = [...Array(7)].map((_,i)=>addDaysS(ws,i));
-  const evs = eventsBetween(days[0], days[6]);
+  const evs = filterPeople(eventsBetween(days[0], days[6]));
   const byDate = new Map();
   for (const e of evs){ if(!byDate.has(e.event_date)) byDate.set(e.event_date,[]); byDate.get(e.event_date).push(e); }
   const today = ymd(new Date());
@@ -679,7 +715,7 @@ function renderWeek(){
 
 function renderDay(){
   const d = state.cursor;
-  const list = onDay(d);
+  const list = filterPeople(onDay(d));
   const today = ymd(new Date());
   const nowH = new Date().getHours();
   const allDay = list.filter(e=>e.all_day);
@@ -730,7 +766,75 @@ const SHOP = {
     state.stores = st.data || []; state.shopItems = it.data || [];
     state.shopCatalog = cat.data || []; state.shopAisles = ai.data || [];
     state.shopCats = cats.data || [];
+    /* This week's sales, matched to the list and to what we buy (026). A
+       missing function (migration not run yet) just means no tags. */
+    const [sl, sc] = await Promise.all([
+      state.db.rpc('sales_for_list', { p_household: hh }),
+      state.db.rpc('sales_for_catalog', { p_household: hh })
+    ]);
+    state.sales = new Map((sl.data || []).map(r => [r.item_id, r]));
+    state.catalogSales = sc.data || [];
+    await SHOP.repairCatalog();
     await SHOP.seedStaples();
+  },
+
+  /* Rows the "butter sticks" bug wrote: a catalog name that is nothing but
+     a shape word ("sticks", "slices", "sticks of") and any unbought list
+     row with such a name. Once per session, only exact shape-only names,
+     never a row with a real word in it. The parser no longer learns them
+     (isFormOnly), so this is history, not maintenance. */
+  _repaired: false,
+  async repairCatalog(){
+    if (SHOP._repaired || state.demo) return;
+    SHOP._repaired = true;
+    /* Shape-only AND classifies as nothing: "sticks", "slices", "cubes". A
+       shape word that is also a real aisle word ("rolls" — bakery, "bag" —
+       household) could be something someone meant, and is left alone. */
+    const junk = n => isFormOnly(n) && parseShopping(n, { stores: [], catalog: [] }).items.every(i => i.category === 'other');
+    const badCat = state.shopCatalog.filter(c => junk(c.name)).map(c => c.name);
+    const badItems = state.shopItems.filter(i => !i.got && junk(i.name));
+    if (!badCat.length && !badItems.length) return;
+    if (badCat.length) {
+      await state.db.from('shopping_catalog').delete()
+        .eq('household_id', CONFIG.HOUSEHOLD_ID).in('name', badCat);
+      state.shopCatalog = state.shopCatalog.filter(c => !badCat.includes(c.name));
+    }
+    if (badItems.length) {
+      await state.db.from('shopping_items').delete().in('id', badItems.map(i => i.id));
+      state.shopItems = state.shopItems.filter(i => !badItems.includes(i));
+    }
+    console.info('catalog repair: removed', { catalog: badCat, items: badItems.map(i => i.name) });
+  },
+
+  /* Where a digital coupon gets clipped. The store's own page does it; the
+     app only knows the door. */
+  clipUrl(storeName){
+    const n = String(storeName || '').toLowerCase();
+    if (/heb|h-e-b/.test(n))  return 'https://www.heb.com/digital-coupon/coupon-selection';
+    if (/kroger/.test(n))     return 'https://www.kroger.com/cl/coupons/';
+    return null;
+  },
+
+  /* Save a pasted ad: one paste per store per week — the store's rows whose
+     validity overlaps this one are replaced; anything older than 60 days
+     goes with them. */
+  async saveSales(storeId, ad){
+    const hh = CONFIG.HOUSEHOLD_ID;
+    const rows = ad.rows.map(r => ({
+      household_id: hh, store_id: storeId, name: r.name, name_key: r.name_key || r.name.toLowerCase(),
+      price: r.price, deal: r.deal, coupon: !!r.coupon,
+      valid_from: ad.valid_from, valid_to: ad.valid_to, source: 'paste', created_by: state.me?.id || null
+    }));
+    const old = new Date(); old.setDate(old.getDate() - 60);
+    await state.db.from('store_sales').delete().eq('household_id', hh).lt('valid_to', ymd(old));
+    await state.db.from('store_sales').delete().eq('household_id', hh).eq('store_id', storeId)
+      .lte('valid_from', ad.valid_to).gte('valid_to', ad.valid_from);
+    if (rows.length) {
+      const { error } = await state.db.from('store_sales').insert(rows);
+      if (error) { console.error(error); toast('Could not save the sales'); return false; }
+    }
+    await SHOP.load(); render();
+    return true;
   },
 
   async add(text){
@@ -757,7 +861,7 @@ const SHOP = {
     // remember what this family buys — same guard as the text number
     for (const it of p.items) {
       const seen = state.shopCatalog.find(c => c.name.toLowerCase() === it.name.toLowerCase());
-      if (seen) continue;
+      if (seen || isFormOnly(it.name)) continue;      // never learn "sticks"
       await state.db.from('shopping_catalog').insert({
         household_id: CONFIG.HOUSEHOLD_ID, name: it.name, category: it.category,
         store_id: it.store?.id ?? null
@@ -863,6 +967,89 @@ const SHOP = {
   }
 };
 
+/* "$1.99 · sale" or the deal text, plus a clip link for a coupon. */
+function saleTag(it){
+  const s = state.sales?.get(it.id);
+  if (!s) return '';
+  const what = s.deal || s.price || 'sale';
+  const clip = s.coupon ? SHOP.clipUrl(s.store_name) : null;
+  return `<span class="sale" title="${esc(s.sale_name)} — ${esc(s.store_name)}">${esc(what)}${s.deal && s.price ? '' : ' · sale'}</span>` +
+         (s.coupon ? `<span class="coupon">coupon</span>` : '') +
+         (clip ? `<a class="clip" href="${clip}" target="_blank" rel="noopener">Clip</a>` : '');
+}
+
+/* Things we buy that are on sale and not on the list. */
+function onSaleHtml(sel){
+  const rows = (state.catalogSales || []).filter(r => !sel || r.store_id === sel);
+  if (!rows.length) return '';
+  return `<div class="ch" style="margin:18px 0 6px">On sale this week · ${rows.length}</div>
+    <ul class="shop-list">${rows.map(r => {
+      const clip = r.coupon ? SHOP.clipUrl(r.store_name) : null;
+      return `<li class="shop-row">
+        <button class="tick" data-sale-add="${esc(r.catalog_name)}" aria-label="Add">+</button>
+        <span class="body">
+          <span class="nm">${esc(r.catalog_name)}</span>
+          <span class="meta"><span class="aisle dim">${esc(r.store_name)}</span><span class="sale">${esc(r.deal || r.price || 'sale')}</span>${r.coupon ? '<span class="coupon">coupon</span>' : ''}${clip ? `<a class="clip" href="${clip}" target="_blank" rel="noopener">Clip</a>` : ''}</span>
+        </span>
+      </li>`; }).join('')}</ul>`;
+}
+
+/* Paste the weekly ad: pick the store, read it, check the rows, save. */
+function openAdSheet(prefill){
+  const storeId0 = state.shopStore || state.stores[0]?.id || null;
+  const chips = state.stores.map(s => `<button type="button" class="chip" data-adstore="${s.id}" aria-pressed="${s.id === storeId0}">${esc(s.name)}</button>`).join('');
+  const html = `
+    <div class="f"><label>Store</label><div class="chips">${chips}</div></div>
+    <div class="f"><label>The ad</label>
+      <textarea id="ad-text" rows="9" placeholder="Copy the weekly ad or the digital-coupon page and paste it here — names and prices, one per line is fine.">${esc(prefill || '')}</textarea></div>
+    <div id="ad-preview"></div>
+    <div class="actions">
+      <button type="button" id="ad-read">Read it</button>
+      <button type="button" id="ad-save" class="primary" disabled>Save</button>
+    </div>`;
+  openMSheet('Paste a weekly ad', html, body => {
+    let ad = null;
+    const storeId = () => body.querySelector('[data-adstore][aria-pressed="true"]')?.dataset.adstore || null;
+    body.querySelectorAll('[data-adstore]').forEach(c => c.onclick = () => {
+      body.querySelectorAll('[data-adstore]').forEach(x => x.setAttribute('aria-pressed', 'false'));
+      c.setAttribute('aria-pressed', 'true');
+    });
+    const read = () => {
+      const text = body.querySelector('#ad-text').value;
+      ad = parseAd(text, { stores: state.stores, catalog: state.shopCatalog, now: new Date() });
+      if (ad.store && !prefill) {
+        body.querySelectorAll('[data-adstore]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.adstore === ad.store.id)));
+      }
+      const known = new Set(state.shopCatalog.map(c => c.name.toLowerCase()));
+      const rows = ad.rows.map(r => `<tr>
+          <td>${esc(r.name)}${known.has(r.name_key) ? ' <span class="okmark" title="matches something we buy">✓</span>' : ''}</td>
+          <td class="adp">${esc(r.deal || r.price || '')}${r.coupon ? ' <span class="coupon">coupon</span>' : ''}</td>
+        </tr>`).join('');
+      body.querySelector('#ad-preview').innerHTML = ad.rows.length
+        ? `<p class="hint">Valid ${esc(ad.valid_from)} – ${esc(ad.valid_to)} · ${ad.rows.length} offers${ad.skipped ? ` · ${ad.skipped} lines skipped` : ''} · ✓ = matches something we buy</p>
+           <div style="max-height:40vh;overflow:auto"><table class="adtable">${rows}</table></div>`
+        : `<p class="warn">Couldn't find any prices in that. One offer per line, like "Milk $2.49".</p>`;
+      const save = body.querySelector('#ad-save');
+      save.disabled = !ad.rows.length;
+      save.textContent = `Save ${ad.rows.length} sale${ad.rows.length === 1 ? '' : 's'}`;
+    };
+    body.querySelector('#ad-read').onclick = read;
+    body.querySelector('#ad-save').onclick = async () => {
+      if (!ad?.rows.length) return;
+      const sid = storeId();
+      if (!sid) { toast('Pick the store'); return; }
+      body.querySelector('#ad-save').disabled = true;
+      const ok = await SHOP.saveSales(sid, ad);
+      if (ok) {
+        closeMSheet();
+        const matched = state.sales?.size || 0;
+        toast(`Saved ${ad.rows.length} sales${matched ? ` · ${matched} on your list` : ''}`);
+      }
+    };
+    if (prefill) read();
+  });
+}
+
 function renderShopping(){
   $('#qa').classList.add('hide');
   const storeName = id => state.stores.find(s => s.id === id)?.name || 'Any store';
@@ -888,7 +1075,7 @@ function renderShopping(){
       <button class="tick" data-tick="${it.id}" aria-label="${it.got ? 'Not got' : 'Got it'}">${it.got ? '&#10003;' : ''}</button>
       <span class="body">
         <span class="nm">${it.qty ? `<b>${esc(it.qty)}</b> ` : ''}${esc(it.name)}${it.note ? ` <i>(${esc(it.note)})</i>` : ''}</span>
-        <span class="meta">${aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}</span>
+        <span class="meta">${aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}${saleTag(it)}</span>
       </span>
       <button class="x" data-x="${it.id}" aria-label="Remove">&times;</button>
     </li>`;
@@ -916,6 +1103,7 @@ function renderShopping(){
   $('#bento').innerHTML = `<div class="col">
     <section class="card">
       <div class="chips">${chips}</div>
+      <div class="hint" style="margin:-4px 2px 8px"><button type="button" class="link" id="shop-ad">Paste a weekly ad</button>${state.catalogSales?.length || state.sales?.size ? ` · sales matched this week` : ''}</div>
       <form id="shop-add" autocomplete="off">
         <input id="shop-in" placeholder='Add: "milk eggs 2 lbs ground beef"' enterkeyhint="done">
         <button type="submit">Add</button>
@@ -925,6 +1113,7 @@ function renderShopping(){
       ${need.length ? blocks.join('') : `<div class="soon" style="padding:26px 12px;margin-top:12px"><b>Nothing to get</b><span>Add something above, or text the family number.</span></div>`}
       ${got.length ? `<div class="ch" style="margin:14px 0 6px">Got · ${got.length}</div>
         <ul class="shop-list">${got.map(r => rowHtml(r, r.store_id)).join('')}</ul>` : ''}
+      ${onSaleHtml(sel)}
       ${items.length ? `<div class="acts" style="margin-top:14px">
         <button type="button" id="shop-done" ${got.length ? '' : 'disabled'}>Done shopping</button>
         <button type="button" id="shop-clear" class="danger">Clear ${sel ? esc(storeName(sel)) : 'everything'}</button>
@@ -936,6 +1125,16 @@ function renderShopping(){
   $('#shop-add').onsubmit = async e => { e.preventDefault(); const v = $('#shop-in').value.trim(); if (!v) return; $('#shop-in').value = ''; await SHOP.add(v); };
   $$('#bento [data-tick]').forEach(b => b.onclick = () => SHOP.toggle(b.dataset.tick));
   $$('#bento [data-recent]').forEach(b => b.onclick = () => SHOP.add(b.dataset.recent));
+  $$('#bento [data-sale-add]').forEach(b => b.onclick = () => SHOP.add(b.dataset.saleAdd));
+  $('#shop-ad').onclick = () => openAdSheet('');
+  /* A pasted weekly ad (three or more priced lines) opens the ad sheet
+     instead of becoming thirty shopping items. A plain list still adds. */
+  $('#shop-in').addEventListener('paste', e => {
+    const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+    if (!looksLikeAd(text)) return;
+    e.preventDefault();
+    openAdSheet(text);
+  });
   $$('#bento [data-x]').forEach(b => b.onclick = () => SHOP.remove(b.dataset.x));
   const done = $('#shop-done'); if (done) done.onclick = () => SHOP.clear(sel, true);
   const clr = $('#shop-clear'); if (clr) clr.onclick = () => {
@@ -1489,6 +1688,33 @@ const MEAL = {
     return state.household?.default_cook_id || state.me?.id || null;
   },
 
+  /* Who is at the table on a date, from the calendar (027): not away, not
+     on the cast of something that overlaps dinner. { n, total, out:[{name, why}] } */
+  async homeFor(date){
+    if (state.demo) return null;
+    const [h, c] = await Promise.all([
+      state.db.rpc('home_for_dinner', { p_household: CONFIG.HOUSEHOLD_ID, p_date: date }),
+      state.db.rpc('dinner_headcount', { p_household: CONFIG.HOUSEHOLD_ID, p_date: date })
+    ]);
+    if (!h.data) return null;
+    const rows = h.data;
+    return { n: c.data ?? rows.filter(r => r.home).length, derived: rows.filter(r => r.home).length,
+             total: rows.length, out: rows.filter(r => !r.home).map(r => ({ name: r.name, why: r.why })) };
+  },
+  homeText(home){
+    if (!home) return '';
+    const why = home.out.length ? ` (${home.out.map(o => `${o.name} ${o.why || 'out'}`).join(', ')})` : '';
+    return `${home.n} home${why}`;
+  },
+
+  /* A stated headcount: the number wins, and the servings follow it. */
+  async setHeadcount(id, n){
+    const { error } = await state.db.from('meal_plan')
+      .update({ headcount_override: n, servings: n, updated_at: new Date().toISOString() }).eq('id', id);
+    if (error) { console.error(error); toast('Could not save that'); return; }
+    await MEAL.load();
+  },
+
   async plan(date, recipeId, opts = {}){
     const row = {
       household_id: CONFIG.HOUSEHOLD_ID, plan_date: date, slot: 'dinner',
@@ -1496,6 +1722,11 @@ const MEAL = {
       servings: opts.servings ?? (state.household?.default_servings ?? 4),
       ready_by: opts.ready_by || null,
       cook_id: opts.cook_id !== undefined ? opts.cook_id : MEAL.defaultCook(),
+      /* Timed to something that evening (the collision): the anchor is kept
+         so the meal sheet can say why, and the countdown follows ready_by. */
+      anchor_event_id: opts.anchor_event_id ?? null, anchor_date: opts.anchor_date ?? null,
+      ...(opts.leave_minutes != null ? { leave_minutes: opts.leave_minutes } : {}),
+      ...(opts.eat_minutes != null ? { eat_minutes: opts.eat_minutes } : {}),
       created_by: state.me?.id || null
     };
     /* One dinner per day is a PARTIAL unique index (deleted_at is null), and
@@ -1839,7 +2070,21 @@ function defaultServings(recipe){
   return house;
 }
 
-function openPlanSheet(date, recipeId = null){
+/* Working backwards from something that evening: out the door LEAVE_MIN
+   before it starts, and EAT_MIN at the table before that. */
+const LEAVE_MIN = 15, EAT_MIN = 20;
+
+async function openPlanSheet(date, recipeId = null){
+  const home = await MEAL.homeFor(date);
+  /* Anything timed after 3pm that day is a collision worth timing dinner to. */
+  const evening = onDay(date).filter(e => !e.all_day && new Date(e.starts_at).getHours() >= 15)
+    .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+  const servingsFor = rid => {
+    const r = state.recipes.find(x => x.id === rid);
+    const house = state.household?.default_servings ?? 4;
+    if (r?.servings && r.servings >= 2 * house) return r.servings;   // a batch is made as a batch
+    return home?.n ?? house;
+  };
   const opts = state.recipes.map(r => `<option value="${r.id}"${r.id === recipeId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
   const html = `
     <div class="f"><label>Day</label><input id="p-date" type="date" value="${date}"></div>
@@ -1847,9 +2092,13 @@ function openPlanSheet(date, recipeId = null){
       <select id="p-recipe"><option value="">— something else —</option>${opts}</select>
       <input id="p-free" placeholder="e.g. pizza night, leftovers" style="margin-top:6px${recipeId ? ';display:none' : ''}"></div>
     <div class="frow">
-      <div class="f"><label>For how many</label><input id="p-serv" type="number" min="1" value="${defaultServings(state.recipes.find(r => r.id === recipeId))}"></div>
+      <div class="f"><label>For how many</label><input id="p-serv" type="number" min="1" value="${servingsFor(recipeId)}"></div>
       <div class="f"><label>On the table by</label><input id="p-ready" type="time" value="${state.household?.default_dinner_at?.slice(0,5) ?? '18:00'}"></div>
     </div>
+    ${home ? `<div class="homeline">${esc(MEAL.homeText(home))}<button type="button" class="link" id="p-usehome">use ${home.n}</button></div>` : ''}
+    ${evening.length ? `<div class="f"><label>That evening</label>
+      <div class="chips" id="p-anchor">${evening.map(e => `<button type="button" class="chip" data-anchor="${e.id}|${e.occurrence_date || e.event_date}" aria-pressed="false">${esc(timeOf(e))} ${esc(e.title)}${whoOf(e, true) !== 'No one yet' ? ` · ${esc(whoOf(e, true))}` : ''}</button>`).join('')}</div>
+      <div class="hintline" id="p-anchor-hint">Tap one and dinner is timed to make it: on the table ${LEAVE_MIN + EAT_MIN} minutes before.</div></div>` : ''}
     <div class="f"><label>Cook</label>${cookChips(MEAL.defaultCook())}</div>
     <p class="hint">The countdown — thaw, preheat, start cooking — goes to the cook. Set the time and it works backwards from it.</p>
     <div class="actions"><button type="button" id="p-go" class="primary">Plan dinner</button></div>`;
@@ -1857,8 +2106,32 @@ function openPlanSheet(date, recipeId = null){
     const sel = body.querySelector('#p-recipe'), free = body.querySelector('#p-free');
     sel.onchange = () => {
       free.style.display = sel.value ? 'none' : '';
-      body.querySelector('#p-serv').value = defaultServings(state.recipes.find(r => r.id === sel.value));
+      body.querySelector('#p-serv').value = servingsFor(sel.value || null);
     };
+    const useHome = body.querySelector('#p-usehome');
+    if (useHome) useHome.onclick = () => { body.querySelector('#p-serv').value = home.n; };
+    let anchor = null;
+    body.querySelectorAll('[data-anchor]').forEach(c => c.onclick = () => {
+      const on = c.getAttribute('aria-pressed') !== 'true';
+      body.querySelectorAll('[data-anchor]').forEach(x => x.setAttribute('aria-pressed', 'false'));
+      const hint = body.querySelector('#p-anchor-hint');
+      if (!on) {
+        anchor = null;
+        body.querySelector('#p-ready').value = state.household?.default_dinner_at?.slice(0, 5) ?? '18:00';
+        hint.textContent = `Tap one and dinner is timed to make it: on the table ${LEAVE_MIN + EAT_MIN} minutes before.`;
+        return;
+      }
+      c.setAttribute('aria-pressed', 'true');
+      const [id, d] = c.dataset.anchor.split('|');
+      const ev = evening.find(e => e.id === id);
+      const start = new Date(ev.starts_at);
+      const ready = new Date(start.getTime() - (LEAVE_MIN + EAT_MIN) * 60000);
+      const hhmm = `${String(ready.getHours()).padStart(2, '0')}:${String(ready.getMinutes()).padStart(2, '0')}`;
+      body.querySelector('#p-ready').value = hhmm;
+      anchor = { anchor_event_id: id, anchor_date: d, leave_minutes: LEAVE_MIN, eat_minutes: EAT_MIN };
+      const who = (ev.people || []).filter(x => x.role === 'going').map(x => memberOf(x.member_id)?.name).filter(Boolean);
+      hint.textContent = `On the table by ${clock12(hhmm)} so ${who.length ? who.join(' and ') : 'everyone'} make${who.length === 1 ? 's' : ''} ${timeOf(ev)} ${ev.title}. Tap again to undo.`;
+    });
     bindCookChips(body);
     body.querySelector('#p-go').onclick = async () => {
       const rid = sel.value || null;
@@ -1866,7 +2139,8 @@ function openPlanSheet(date, recipeId = null){
         freeform: free.value.trim() || 'Dinner',
         servings: +body.querySelector('#p-serv').value || null,
         ready_by: body.querySelector('#p-ready').value || null,
-        cook_id: pickedCook(body)
+        cook_id: pickedCook(body),
+        ...(anchor || { anchor_event_id: null, anchor_date: null })
       });
       closeMSheet();
       if (id && rid) openMealSheet(id);          // straight to have/need
@@ -1900,10 +2174,13 @@ async function openMealSheet(id){
      else the planner. Shown so "who's got dinner" has an answer on the card. */
   const cookId = m.cook_id || MEAL.defaultCook() || m.created_by || null;
   const cook = state.members.find(x => x.id === cookId);
+  const home = await MEAL.homeFor(m.plan_date);
   const html = `
     <p class="rmeta">${new Date(m.plan_date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'})}
       ${m.ready_by ? ` · on the table by ${clock12(m.ready_by)}` : ''}${m.servings ? ` · for ${m.servings}` : ''}
-      ${factor !== 1 ? ` · <b>×${fmtQty(factor)}</b>` : ''}${cook ? ` · ${esc(cook.name)} cooks` : ''}</p>
+      ${factor !== 1 ? ` · <b>×${fmtQty(factor)}</b>` : ''}${cook ? ` · ${esc(cook.name)} cooks` : ''}${anchorNote(m)}</p>
+    ${home ? `<div class="homeline">${esc(MEAL.homeText({ ...home, n: home.derived }))}${m.headcount_override ? ` · set to ${m.headcount_override}` : ''}
+      <span class="stepper"><button type="button" data-hc="-1" aria-label="fewer">−</button><b>${m.headcount_override ?? home.n}</b><button type="button" data-hc="1" aria-label="more">+</button></span></div>` : ''}
     ${r ? `<h3>Need to buy <small>— tick what you don't have</small></h3><div class="hnlist">${rows}</div>
            <div class="actions"><button type="button" id="m-push" class="primary">Add checked to shopping list</button></div>` : ''}
     ${r ? `<h3>Cook <small>— the countdown goes to them</small></h3>${cookChips(cookId)}` : ''}
@@ -1937,6 +2214,12 @@ async function openMealSheet(id){
     });
     body.querySelector('#m-unplan').onclick = () => { if (confirm('Un-plan this dinner? Un-bought items come off the list too.')) { MEAL.unplan(id); closeMSheet(); } };
     const rb = body.querySelector('#m-recipe'); if (rb) rb.onclick = () => openRecipeSheet(r.id);
+    body.querySelectorAll('[data-hc]').forEach(b => b.onclick = async () => {
+      const cur = m.headcount_override ?? home?.n ?? 4;
+      const n = Math.max(1, Math.min(50, cur + (+b.dataset.hc)));
+      await MEAL.setHeadcount(id, n);
+      openMealSheet(id);
+    });
     /* Changing the cook moves the countdown (trigger); reopen so it shows. */
     bindCookChips(body, async memberId => {
       await MEAL.setCook(id, memberId);
@@ -1976,6 +2259,9 @@ const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 
 function bindCalendar(){
   $$('[data-nav]').forEach(b => b.onclick = () => { stepCursor(+b.dataset.nav); render(); });
+  $$('[data-person]').forEach(b => b.onclick = () => {
+    state.personFilter = b.dataset.person || null; setPerson(state.personFilter); render();
+  });
   $$('[data-day]').forEach(b => b.onclick = () => {
     if (state.view === 'month') { state.selectedDay = b.dataset.day; render(); }
     else openSheet(null, b.dataset.day);
@@ -2241,17 +2527,31 @@ function openSheet(e, presetDate){
   $('#ev-time').value  = src.all_day === false && src.starts_at
     ? new Date(src.starts_at).toTimeString().slice(0,5) : '';
 
-  const who = src.member_id !== undefined ? src.member_id : (state.me?.id || null);
-  $('#ev-who').innerHTML = [
-    ...state.members.map(m => `<button type="button" class="chip" data-w="${m.id}" aria-pressed="${who===m.id}">
-        <span class="dot" style="background:${m.color}"></span>${m.name}</button>`),
-    `<button type="button" class="chip" data-w="" aria-pressed="${!who}">
-        <span class="dot" style="background:${EVERYONE}"></span>Everyone</button>`
-  ].join('');
-  $$('#ev-who .chip').forEach(c => c.onclick = () => {
-    $$('#ev-who .chip').forEach(x => x.setAttribute('aria-pressed','false'));
-    c.setAttribute('aria-pressed','true');
-  });
+  /* THE CAST. One row per person, a presence (going / helps / maybe) and at
+     most one ride role (drives / takes / picks up). A new event starts with
+     the person holding the phone going; an existing one shows its rows. On
+     a repeating event the cast is the series' — every date — which the note
+     under the grid says. */
+  const cast = new Map();
+  if (src.people?.length) for (const c of src.people) {
+    cast.set(c.member_id, toggleCastRole(cast.get(c.member_id) || [], c.role));
+  } else if (src.member_id) cast.set(src.member_id, ['going']);
+  else if (!src.id && state.me?.id) cast.set(state.me.id, ['going']);
+  state.castEdit = cast;
+  const ROLE_CHIPS = [['going','going'],['helping','helps'],['optional','maybe'],['driving','drives'],['dropoff','takes'],['pickup','picks up']];
+  const drawCast = () => {
+    $('#ev-who').innerHTML = state.members.map(m => {
+      const roles = cast.get(m.id) || [];
+      return `<div class="castrow"><span class="castname"><span class="dot" style="background:${m.color}"></span>${esc(m.name)}</span>
+        <span class="castchips">${ROLE_CHIPS.map(([r, l]) => `<button type="button" class="chip mini" data-cm="${m.id}" data-cr="${r}" aria-pressed="${roles.includes(r)}">${l}</button>`).join('')}</span></div>`;
+    }).join('') + (src.repeat_freq || src.is_occurrence ? `<div class="hintline">Cast applies to every date of a repeating event.</div>` : '');
+    $$('#ev-who [data-cm]').forEach(b => b.onclick = () => {
+      const next = toggleCastRole(cast.get(b.dataset.cm) || [], b.dataset.cr);
+      if (next.length) cast.set(b.dataset.cm, next); else cast.delete(b.dataset.cm);
+      drawCast();
+    });
+  };
+  drawCast();
 
   // repeat controls
   const rf = src.repeat_freq ?? null;
@@ -2295,7 +2595,9 @@ function closeSheet(){ sheet.classList.remove('on'); state.editing = null; }
 $('#ev-form').addEventListener('submit', async e => {
   e.preventDefault();
   const date = $('#ev-date').value, time = $('#ev-time').value;
-  const whoBtn  = $('#ev-who .chip[aria-pressed="true"]');
+  const people = [];
+  for (const [mid, roles] of (state.castEdit || new Map())) for (const r of roles) people.push({ member_id: mid, role: r });
+  const owner = people.find(p => p.role === 'going')?.member_id ?? people[0]?.member_id ?? null;
   const leadBtn = $('#ev-lead .chip[aria-pressed="true"]');
   const repBtn  = $('#ev-repeat .chip[aria-pressed="true"]');
   const freq    = repBtn && repBtn.dataset.r !== '' ? repBtn.dataset.r : null;
@@ -2308,7 +2610,8 @@ $('#ev-form').addEventListener('submit', async e => {
     all_day: !time, event_date: date,
     starts_at: time ? new Date(`${date}T${time}:00`).toISOString() : null,
     ends_at: null,
-    member_id: whoBtn?.dataset.w || null,
+    member_id: owner,
+    people,
     lead_minutes: leadBtn && leadBtn.dataset.l !== '' ? +leadBtn.dataset.l : null,
     repeat_freq: freq,
     repeat_interval: 1,
@@ -2327,16 +2630,23 @@ $('#ev-form').addEventListener('submit', async e => {
       const scope = await askScope('This is a repeating event',
         `${describeRepeat(series)}. Apply your changes to which ones?`);
       if (!scope) return;
-      if (scope === 'one')    await applyOne(series, occ, payload);
-      else if (scope === 'future') {
+      if (scope === 'one') {
+        await applyOne(series, occ, payload);
+        /* No per-occurrence cast: the people rows belong to the series. */
+        await DB.syncPeople(series.id, people, payload.lead_minutes, false);
+      } else if (scope === 'future') {
         await truncateSeries(series, occ);
         await DB.saveEvent({ ...payload, id: null });
       } else {
         await DB.saveEvent({ ...payload, id: series.id });
       }
+      /* A series' reminders are the materializer's; after a cast change,
+         run it now rather than at 8:10 tonight. */
+      if (!state.demo) await state.db.rpc('materialize_series_reminders', { days_ahead: 21 });
       if (state.demo) { /* demo state already mutated */ } else await DB.loadEvents();
     } else {
       await DB.saveEvent(payload);
+      if (payload.repeat_freq && !state.demo) await state.db.rpc('materialize_series_reminders', { days_ahead: 21 });
     }
     closeSheet(); render(); toast(state.editing ? 'Saved' : 'Added');
   } catch (err) { console.error(err); toast('Could not save'); }

@@ -12,7 +12,7 @@
  *
  * This test fails loudly the moment they stop matching.
  * ========================================================================= */
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 
 const START = '/* ============================================================================\n * Family Hub';
 const END   = 'const admin = () => createClient(';
@@ -119,6 +119,35 @@ const parsed = declared ? declared.split(',').map(s => s.trim().replace(/'/g,'')
 check('parser role list matches the database constraint',
       JSON.stringify(parsed) === JSON.stringify(dbRoles),
       `parser: ${JSON.stringify(parsed)}  db: ${JSON.stringify(dbRoles)}`);
+
+/* ---------------------------------------------------------------------------
+ * ONE canonical source per edge function.
+ *
+ * The repo once carried a second copy of every function under
+ * supabase/functions/<name>/index.ts, left over from the CLI layout. Nothing
+ * deploys from there — the dashboard paste and the MCP deploy both read the
+ * flat file at the repo root — but a stale duplicate of a 150KB handler is a
+ * trap: an agent or a person edits the wrong one, the tests still pass, and
+ * the change never reaches the phone. They were deleted on 2026-09-12 after
+ * exactly that happened. This keeps them gone.
+ * ------------------------------------------------------------------------- */
+{
+  const stale = ['sms-inbound', 'dispatch-reminders', 'ics-feed', 'morning-digest',
+                 'recipe-import', 'materialize-reminders']
+    .filter(n => existsSync(`./supabase/functions/${n}/index.ts`));
+  check('no duplicate edge-function sources under supabase/functions',
+        stale.length === 0,
+        stale.length ? `delete: ${stale.map(n => `supabase/functions/${n}/`).join(' ')}` : '');
+
+  /* Same trap, same reason: migrations live as migration-0NN-*.sql at the
+     root, and schema_migrations is the ledger. A second numbered copy under
+     supabase/migrations/ is something to run by mistake. */
+  const dupMig = existsSync('./supabase/migrations')
+    ? readdirSync('./supabase/migrations').filter(f => f.endsWith('.sql')) : [];
+  check('no duplicate migrations under supabase/migrations',
+        dupMig.length === 0,
+        dupMig.length ? `delete: ${dupMig.join(' ')}` : '');
+}
 
 console.log(fail ? `\n${fail} check(s) failed` : '\nno drift');
 process.exit(fail ? 1 : 0);

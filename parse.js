@@ -646,10 +646,10 @@ const CATEGORY_WORDS = [
      not a spice word — ground beef is meat — so it is named per spice.
      Ranch is a dressing packet, on the condiments aisle, and is claimed
      first so "ranch seasoning mix" does not become a spice. */
-  [/\branch\b/i, 'condiments'],
+  [/\branch(?:\s+(?:seasoning|dressing|dip)(?:\s+mix)?)?\b/i, 'condiments'],
   [/\b(?:paprika|cumin|oregano|thyme|rosemary|sage|dill\s*weed|cinnamon|nutmeg|cayenne|turmeric|allspice|cardamom|coriander|cloves?\b(?!\s+(?:of\s+)?garlic)|bay\s*lea(?:f|ves)|chili\s*powder|curry\s*powder|garlic\s*powder|onion\s*powder|garlic\s*salt|onion\s*salt|black\s*pepper|white\s*pepper|peppercorns?|(?:red\s*|crushed\s*)?pepper\s*flakes|(?:italian|taco|cajun|creole|poultry|steak|lemon\s*pepper)\s*seasoning|dried\s+\w+|ground\s+(?:cinnamon|cumin|ginger|cloves|nutmeg|pepper|coriander|mustard|allspice)|\w+\s+extract|kosher\s*salt|sea\s*salt|table\s*salt|\bsalt\b|seasoning|spices?)\b/i, 'baking'],
   [/\b(?:apple|banana|orange|lemon|lime|grape|berry|berries|strawberr|blueberr|melon|avocado|tomato|potato|onion|garlic|lettuce|spinach|kale|carrot|celery|pepper|cucumber|broccoli|cauliflower|zucchini|squash|mushroom|cilantro|parsley|basil|salad|produce|fruit|veg)/i, 'produce'],
-  [/\b(?:bread|bagel|bun|roll|tortilla|pita|croissant|muffin|donut|cake|pie|bakery)/i, 'bakery'],
+  [/\b(?:hot\s*dog\s*buns?|hamburger\s*buns?|bread|bagel|bun|roll|tortilla|pita|croissant|muffin|donut|cake|pie|bakery)/i, 'bakery'],
   [/\b(?:deli|lunch\s*meat|sandwich\s*meat|turkey\s*slices|salami|prosciutto|rotisserie)/i, 'deli'],
   [/\b(?:beef|steak|ground\s*(?:beef|turkey|chuck)|chicken|thigh|drumstick|pork|bacon|sausage|ham|brisket|ribs|meat|hot\s*dog)/i, 'meat'],
   [/\b(?:fish|salmon|tilapia|shrimp|crab|lobster|tuna\s*steak|seafood|cod)/i, 'seafood'],
@@ -657,16 +657,16 @@ const CATEGORY_WORDS = [
   [/\b(?:egg|eggs)\b/i, 'eggs'],
   [/\b(?:frozen|ice\s*cream|popsicle|freezer|waffles?)\b/i, 'frozen'],
   [/\b(?:cereal|oatmeal|oats|granola|pancake|syrup|pop\s*tart)/i, 'breakfast'],
-  [/\b(?:canned|can\s+of|soup|beans|corn|tomato\s*sauce|tomato\s*paste|broth|stock)/i, 'canned'],
-  [/\b(?:rice|pasta|noodle|spaghetti|flour|sugar|salt|cereal\s*bar|cracker|peanut\s*butter|jelly|jam|honey|olive\s*oil|oil|vinegar)/i, 'pantry'],
-  [/\b(?:baking|yeast|baking\s*(?:soda|powder)|vanilla|choc(?:olate)?\s*chip|cocoa|powdered\s*sugar|brown\s*sugar)/i, 'baking'],
+  [/\b(?:cream\s+of\s+\w+\s+soup|\w+\s+noodle\s+soup|chicken\s+soup|chicken\s*broth|beef\s*broth|chicken\s*stock|beef\s*stock|canned|can\s+of|soup|beans|corn|tomato\s*sauce|tomato\s*paste|broth|stock)/i, 'canned'],
+  [/\b(?:bread\s*crumbs|rice|pasta|noodle|spaghetti|flour|sugar|salt|cereal\s*bar|cracker|peanut\s*butter|jelly|jam|honey|olive\s*oil|oil|vinegar)/i, 'pantry'],
+  [/\b(?:cream\s+of\s+tartar|baking|yeast|baking\s*(?:soda|powder)|vanilla|choc(?:olate)?\s*chip|cocoa|powdered\s*sugar|brown\s*sugar)/i, 'baking'],
   [/\b(?:ketchup|mustard|mayo|mayonnaise|ranch|dressing|bbq|hot\s*sauce|salsa|soy\s*sauce|sauce|seasoning|spice)/i, 'condiments'],
   [/\b(?:haribo|skittles|starburst|sour\s*patch|twizzlers|hershey|reese|kit\s*kat|snickers|m\s*&\s*ms|jolly\s*rancher|airheads|swedish\s*fish|gumm(?:y|ies))\b/i, 'snacks'],
-  [/\b(?:snack|chips?\b|dorito|tostito|cookie|candy|popcorn|pretzel|nuts?|trail\s*mix|granola\s*bar|fruit\s*snack)/i, 'snacks'],
+  [/\b(?:tortilla\s*chips?|potato\s*chips?|milk\s*chocolate|snack|chips?\b|dorito|tostito|cookie|candy|popcorn|pretzel|nuts?|trail\s*mix|granola\s*bar|fruit\s*snack)/i, 'snacks'],
   [/\b(?:water|soda|coke|sprite|dr\s*pepper|juice|coffee|tea|gatorade|beer|wine|drink|la\s*croix)/i, 'beverages'],
-  [/\b(?:battery|batteries|light\s*bulb|bulb|tape|glue|foil|ziploc|bag(?:gie)?s?|storage|trash\s*bag)/i, 'household'],
-  [/\b(?:paper\s*towel|toilet\s*paper|tp\b|napkin|tissue|kleenex|plate|cup|paper\s*goods)/i, 'paper'],
-  [/\b(?:detergent|soap|bleach|clorox|lysol|cleaner|sponge|dishwasher|laundry|softener|windex)/i, 'cleaning'],
+  [/\b(?:coffee\s*filters?|battery|batteries|light\s*bulb|bulb|tape|glue|foil|ziploc|bag(?:gie)?s?|storage|trash\s*bag)/i, 'household'],
+  [/\b(?:paper\s*towel|toilet\s*paper|tp\b|napkin|tissue|kleenex|plate|(?:paper|solo|plastic|disposable|coffee|red)\s*cups?|paper\s*goods)/i, 'paper'],
+  [/\b(?:dryer\s*sheets?|detergent|soap|bleach|clorox|lysol|cleaner|sponge|dishwasher|laundry|softener|windex)/i, 'cleaning'],
   [/\b(?:shampoo|conditioner|toothpaste|toothbrush|deodorant|razor|floss|lotion|body\s*wash|tampon|pad|makeup)/i, 'personal'],
   [/\b(?:diaper|wipes|formula|baby)/i, 'baby'],
   [/\b(?:dog|cat|pet|kibble|litter|treats?\s*for)/i, 'pet'],
@@ -702,6 +702,9 @@ const KNOWN_ITEMS = [
   'sour cream','cream cheese','heavy cream','whipping cream','half and half',
   'cottage cheese','string cheese','shredded cheese','sliced cheese','greek yogurt',
   'almond milk','oat milk','whole milk','skim milk','chocolate milk','egg whites',
+  'buttermilk','butter lettuce','milk chocolate','egg noodles','coconut oil','cream of tartar',
+  'cream of mushroom soup','cream of chicken soup','ice cream cones','ice cream cone',
+  'pancake mix','buttermilk pancake mix','ranch seasoning','ranch seasoning mix','ranch dressing','dryer sheets',
   // bakery
   'hamburger buns','hot dog buns','sandwich bread','wheat bread','white bread',
   'english muffins','tortilla shells','flour tortillas','corn tortillas','bagels',
@@ -723,7 +726,7 @@ const KNOWN_ITEMS = [
   // household + paper + cleaning
   'paper towels','toilet paper','trash bags','ziploc bags','sandwich bags',
   'freezer bags','aluminum foil','plastic wrap','parchment paper','paper plates',
-  'paper napkins','dish soap','dishwasher pods','laundry detergent','fabric softener',
+  'paper napkins','paper cups','solo cups','plastic cups','coffee cups','dish soap','dishwasher pods','laundry detergent','fabric softener',
   'dryer sheets','all purpose cleaner','glass cleaner','toilet cleaner','light bulbs',
   'batteries','aa batteries','aaa batteries',
   // personal + baby + pet + pharmacy
@@ -774,7 +777,66 @@ const SHOP_TAIL = /\s*(?:to|on|from)\s+(?:the\s+)?(?:shopping\s+|grocery\s+)?lis
    counts as a quantity when a unit follows it. Otherwise "half and half"
    parses as half of something called "and half", and "a pineapple" loses
    its fruit. */
-const QTY_RE = /^(?:(\d+(?:\.\d+)?\s*(?:x\s*)?(?:lbs?|pounds?|oz|ounces?|gal(?:lons?)?|qts?|quarts?|pints?|liters?|l|cans?|jars?|boxes|box|bags?|bunch(?:es)?|heads?|dozen|packs?|packages?|cartons?|loaves|loaf|bottles?|cases?|sticks?|rolls?|containers?)?)|((?:a|an|one|two|three|four|five|six|couple(?:\s+of)?|half|a\s+few)\s+(?:lbs?|pounds?|oz|ounces?|gal(?:lons?)?|qts?|quarts?|pints?|liters?|l|cans?|jars?|boxes|box|bags?|bunch(?:es)?|heads?|dozen|packs?|packages?|cartons?|loaves|loaf|bottles?|cases?|sticks?|rolls?|containers?)))\s+(?=\S)/i;
+/* The SHAPE a thing comes in — sticks, slices, a jug, a carton. Never an
+   item on its own ("sticks" is not something you buy), so two things follow:
+   after a known item it belongs to the item's NAME ("butter sticks" reads
+   the way it was typed; the catalog can hold "butter" and "butter sticks"
+   both), and in front of "of" it is a quantity ("sticks of butter" → butter,
+   qty "sticks"). Exported so the app can sweep the bare-form rows this bug
+   once wrote into the catalog. */
+export const FORM_WORDS = new Set([
+  'stick','sticks','cube','cubes','slice','slices','half','halves','wedge','wedges',
+  'block','blocks','bar','bars','loaf','loaves','jug','jugs','carton','cartons','tub','tubs',
+  'roll','rolls','bottle','bottles','can','cans','jar','jars','box','boxes','bag','bags',
+  'bunch','bunches','head','heads','pack','packs','package','packages','container','containers',
+  'cluster','clusters','link','links','fillet','fillets','filet','filets','thigh','thighs','breast','breasts',
+  'quarter','quarters','round','rounds','sheet','sheets','pod','pods','dozen',
+  /* cuts — "ham steaks", "chicken wings", "turkey patties" */
+  'steak','steaks','chop','chops','wing','wings','drumstick','drumsticks','nugget','nuggets',
+  'patty','patties','strip','strips','tender','tenders','cutlet','cutlets',
+]);
+/* The MEASURES a recipe is written in — cups, tbsp, oz, lb, gallons, cans,
+   pinches. One list, used by the ingredient parser's unit rule, by the
+   shopping splitter's quantity detection, and by isFormOnly. There were
+   two lists for a while and the splitter consulted only one, which is how
+   "gallon of milk" became an item called "gallon of". */
+export const UNIT_WORDS = [
+  'cups','cup','c','tablespoons','tablespoon','tbsp','tbs','tb','teaspoons','teaspoon','tsp',
+  'ounces','ounce','oz','fl oz','pounds','pound','lbs','lb','grams','gram','g','kilograms','kilogram','kg',
+  'milliliters','milliliter','ml','liters','liter','litres','litre','l',
+  'pints','pint','pt','quarts','quart','qt','gallons','gallon','gal',
+  'cans','can','packages','package','pkg','packets','packet','jars','jar','bottles','bottle',
+  'boxes','box','bags','bag','bunches','bunch','heads','head','cloves','clove','sticks','stick',
+  'slices','slice','pieces','piece','sprigs','sprig','stalks','stalk','ears','ear','loaves','loaf',
+  'pinch','pinches','dash','dashes','handful','handfuls','splash','sprinkle','drizzle',
+  'cases','case','six pack','six-pack','12 pack','12-pack','twelve pack','dozen',
+];
+/* Every word that says HOW MUCH or WHAT SHAPE, never WHAT. */
+export const MEASURE_WORDS = new Set([...UNIT_WORDS, ...FORM_WORDS]);
+const MEASURE_ALT = [...MEASURE_WORDS].sort((a, b) => b.length - a.length)
+  .map(w => w.replace(/[-]/g, '\\-').replace(/ /g, '\\s+')).join('|');
+/* "sticks", "gallon of", "a box of", "cup" — a name that is nothing but a
+   measure or a shape. The catalog must never learn one: a learned "sticks"
+   would make the splitter treat it as an item again and re-create the
+   very bug. And a chunk that is only this is nothing to buy. */
+export const isFormOnly = name => {
+  const n = String(name || '').toLowerCase().replace(/\s+/g, ' ').trim()
+    .replace(/^(?:a|an|one|two|three|four|five|six|half\s+a|half|a\s+few|some|\d+(?:\.\d+)?)\s+/, '').replace(/\s+of$/, '');
+  return MEASURE_WORDS.has(n) || MEASURE_WORDS.has(n.replace(/-/g, ' '));
+};
+/* "sticks of", "a box of", "half a dozen" — a shape word (optionally with an
+   article or a small number word) followed by "of" is a quantity phrase. */
+/* "gallon milk", "dozen eggs" — a bare measure straight before the item.
+   Applied only when what follows is a known item (see the splitter), so
+   "can opener" keeps its can. */
+const BARE_QTY_RE = new RegExp(`^(${MEASURE_ALT})\\s+(?=\\S)`, 'i');
+/* "sticks of", "gallon of", "a box of", "2 lbs of" — any measure or shape
+   word, with or without a number or article, followed by "of". */
+const FORM_OF_RE = new RegExp(`^(?:(?:a|an|one|two|three|four|five|six|couple(?:\\s+of)?|half|half\\s+a|a\\s+few|some|\\d+(?:\\.\\d+)?)\\s+)?(?:${MEASURE_ALT})\\s+of\\s+(?=\\S)`, 'i');
+
+/* A number (with an optional measure) or an article + measure. The measure
+   alternation is MEASURE_ALT — the one list. */
+const QTY_RE = new RegExp(`^(?:(\\d+(?:\\.\\d+)?\\s*(?:x\\s*)?(?:${MEASURE_ALT})?)|((?:a|an|one|two|three|four|five|six|couple(?:\\s+of)?|half\\s+a|half|a\\s+few)\\s+(?:${MEASURE_ALT})))\\s+(?=\\S)`, 'i');
 
 /* Some things you have to stand in front of and choose. A packaged item is a
    SKU — anyone can grab it, and it can be ordered online without a thought.
@@ -787,11 +849,22 @@ const freshness = cat => ({
   onlineOk:     !PICK_YOURSELF.has(cat),
 });
 
+/* The MOST SPECIFIC row wins, not the first. First-match-wins in aisle order
+   sent "peanut butter" to dairy because the dairy row's bare "butter" sat
+   above the pantry row's "peanut butter" — and every fix was another row
+   hand-ordered above another, which does not scale ("ranch" above the spice
+   row was the last one). Now every row that matches is scored by how much
+   of the name it matched; the longest match wins; table order only breaks
+   ties, so everything the order used to decide still decides the same way. */
 const catOf = (name, catalog) => {
   const hit = (catalog || []).find(c => c.name.toLowerCase() === name.toLowerCase());
   if (hit && hit.category) return hit.category;          // the household's own memory wins
-  for (const [re, cat] of CATEGORY_WORDS) if (re.test(name)) return cat;
-  return 'other';
+  let best = null, bestLen = 0;
+  for (const [re, cat] of CATEGORY_WORDS) {
+    const m = String(name).match(re);
+    if (m && m[0].length > bestLen) { best = cat; bestLen = m[0].length; }
+  }
+  return best || 'other';
 };
 
 /* ---------------------------------------------------------------------------
@@ -878,7 +951,7 @@ function repairWord(word) {
    nothing was recognised — a name that already classified is left alone. */
 export function repairName(name, knownSet) {
   const isKnown = t => (knownSet ? (knownSet.builtin.has(t) || knownSet.learned.has(t))
-                                 : BUILTIN.has(t)) || catOf(t, null) !== 'other';
+                                 : BUILTIN.has(t)) || catOf(t, null) !== 'other' || MEASURE_WORDS.has(t);
   const whole = String(name).toLowerCase();
   if (isKnown(whole)) return null;
 
@@ -977,6 +1050,7 @@ function buildKnown(catalog) {
   for (const c of (catalog || [])) {
     if (!c || !c.name) continue;
     const n = String(c.name).toLowerCase();
+    if (isFormOnly(n)) continue;                 // "sticks" is not a thing this house buys
     if (!looksMerged(n)) learned.add(n);
   }
   return { builtin: BUILTIN, learned };
@@ -1025,9 +1099,21 @@ function splitRun(part, knownSet) {
   };
   const qtyLen = k => {
     if (k >= toks.length) return 0;
-    const m = QTY_RE.exec(toks.slice(k).join(' ') + ' ');
-    return m ? m[0].trim().split(/\s+/).length : 0;
+    const rest = toks.slice(k).join(' ') + ' ';
+    const m = QTY_RE.exec(rest) || FORM_OF_RE.exec(rest);
+    if (m) return m[0].trim().split(/\s+/).length;
+    /* "gallon milk": a bare measure, but only in front of a known item. */
+    const b = BARE_QTY_RE.exec(rest);
+    if (b) {
+      const n = b[0].trim().split(/\s+/).length;
+      if (knownAt(k + n) && !MEASURE_WORDS.has(normTok(toks[k + n] || ''))) return n;
+    }
+    return 0;
   };
+  /* A shape word that is not itself an item, not followed by "of". */
+  const formAt = k => k < toks.length && FORM_WORDS.has(normTok(toks[k]))
+    && !knownSet.builtin.has(normTok(toks[k])) && !knownSet.learned.has(normTok(toks[k]))
+    && !(toks[k + 1] && /^of$/i.test(toks[k + 1]));
 
   /* A brand ahead of position k, at any length it is written. */
   const brandAt = k => {
@@ -1072,6 +1158,11 @@ function splitRun(part, knownSet) {
     if (k) {
       const wasBrand = brandAt(i) === k;
       i += k;
+      /* ROOT 1. A known item followed by its SHAPE is still one item:
+         "butter sticks", "cheese slices", "toilet paper rolls". The chunk
+         used to close on "butter" and the orphan "sticks" became a row of
+         its own. Up to two shape words ride along, into the name. */
+      for (let f = 0; f < 2 && formAt(i); f++) i++;
       /* A brand introduces a product; it does not end one. Absorb what
          follows until something clearly begins a new item. */
       if (wasBrand) {
@@ -1095,6 +1186,15 @@ function splitRun(part, knownSet) {
     } else {
       i++;
       while (i < toks.length && !knownAt(i) && !qtyLen(i) && !isNoise(toks[i])) i++;
+      /* ONE unknown word in front of ONE known word is an adjective, not an
+         item: "coconut oil", "fresh basil", "organic milk", "sweet corn". The
+         run used to stop dead at the known word and file "coconut" as a
+         thing to buy. A brand or a known PHRASE still starts its own item. */
+      if (i - start === 1 && i < toks.length && knownAt(i) === 1 && !brandAt(i)
+          && !qtyLen(i) && !isNoise(toks[i])) {
+        i++;
+        for (let f = 0; f < 2 && formAt(i); f++) i++;
+      }
     }
     const chunk = toks.slice(start, i).join(' ').trim();
     if (chunk) chunks.push(chunk);
@@ -1201,7 +1301,8 @@ export function parseShopping(input, opts = {}) {
     body = bodyToks.map((tok, ix) => {
       const bare = tok.toLowerCase().replace(/[^a-z]/g, '');
       if (!bare || bare.length < 5) return tok;
-      if (knownWord(bare) || knownSet.builtin.has(bare) || knownSet.learned.has(bare)) return tok;
+      /* A measure word is never a misheard brand: "loaves" is not "Luvs". */
+      if (knownWord(bare) || knownSet.builtin.has(bare) || knownSet.learned.has(bare) || MEASURE_WORDS.has(bare)) return tok;
       /* Everything inside a brand's product name is off limits. Those words
          are flavours, sizes and variants, and repairing them corrupts the
          name: "Haribo gold bears" came out as "Haribo glad bears" and then
@@ -1229,9 +1330,16 @@ export function parseShopping(input, opts = {}) {
         let name = chunk.replace(/^(?:and|plus|also)\s+/i, '')
                         .replace(/^(?:some|a\s+few|the)\s+/i, '').trim();
         let qty = null;
-        const q = QTY_RE.exec(name);
+        let q = QTY_RE.exec(name) || FORM_OF_RE.exec(name);
+        if (!q) {
+          const b = BARE_QTY_RE.exec(name);
+          const rest = b ? name.slice(b[0].length).trim().toLowerCase() : '';
+          if (b && rest && (knownSet.builtin.has(rest) || knownSet.learned.has(rest) || catOf(rest, null) !== 'other')) q = b;
+        }
         if (q) {
-          qty = (q[1] || q[2]).trim();
+          /* "2 lbs" from the number path; "sticks" / "a box" from the shape
+             path (the "of" is the quantity's, not the name's). */
+          qty = (q[1] || q[2] || q[0].replace(/\s+of\s*$/i, '')).trim();
           // "3 bottles of coke" — the preposition belongs to the quantity.
           name = name.slice(q[0].length).replace(/^of\s+/i, '').trim();
         }
@@ -1240,6 +1348,11 @@ export function parseShopping(input, opts = {}) {
            in the catalog that never learn from each other. */
         name = name.replace(/^(?:a|an)\s+/i, '').replace(/[.!]+$/, '').trim().toLowerCase();
         if (!name) return;
+        /* "cup", "sticks", "gallon of" — a measure with nothing measured is
+           not a thing to buy. Dropped, and said so. */
+        if (isFormOnly(name) && catOf(name, opts.catalog) === 'other') {
+          out.warnings.push(`nothing to buy in "${name}"`); return;
+        }
 
         /* Dictation breaks brand names more than anything else. Repair only
            what nothing recognised, and always say so — a confident wrong
@@ -1498,6 +1611,10 @@ export function routeIntent(body, opts = {}, from = 0) {
        multi-item path a comma list takes. Both before the questions and
        the tails, after the list commands, so "list" alone never gets here. */
     if (splitSeasonLines(text).length >= 3) {
+      /* A weekly ad (three or more priced lines) is unmistakable and is
+         checked first: its "9/10 thru 9/16" and "10-13 oz" would otherwise
+         read as a schedule. Nobody texts an ad; the app reads it. */
+      if (looksLikeAd(text)) return { intent: 'ad' };
       if (looksLikeSeason(text, opts)) return { intent: 'season', season: parseSeason(text, opts) };
       const probe = parseShopping(text, { stores, catalog: opts.catalog || [] });
       const known = probe.items.filter(i => i.category !== 'other').length;
@@ -1508,7 +1625,11 @@ export function routeIntent(body, opts = {}, from = 0) {
        stage 2 — "no school Friday" is not a shopping correction. */
     const abs = absenceIntent(text, opts);
     if (abs) return abs;
-    /* "dinner is leftovers" — the meal, said once. */
+    /* "3 for dinner" — the headcount; then "dinner is leftovers" — the meal. */
+    const rw = repeatWeekIntent(text);
+    if (rw) return rw;
+    const hc = headcountIntent(text, opts);
+    if (hc) return hc;
     const din = dinnerIntent(text, opts);
     if (din) return din;
     /* Questions. Before anything that can write a row: "anything
@@ -1857,16 +1978,6 @@ export function looksLikeTodo(text, members) {
 
 const VULGAR = { '½':0.5,'⅓':1/3,'⅔':2/3,'¼':0.25,'¾':0.75,'⅛':0.125,'⅜':0.375,'⅝':0.625,'⅞':0.875 };
 
-const UNIT_WORDS = [
-  'cups','cup','c','tablespoons','tablespoon','tbsp','tbs','tb','teaspoons','teaspoon','tsp',
-  'ounces','ounce','oz','fl oz','pounds','pound','lbs','lb','grams','gram','g','kilograms','kilogram','kg',
-  'milliliters','milliliter','ml','liters','liter','litres','litre','l',
-  'pints','pint','pt','quarts','quart','qt','gallons','gallon','gal',
-  'cans','can','packages','package','pkg','packets','packet','jars','jar','bottles','bottle',
-  'boxes','box','bags','bag','bunches','bunch','heads','head','cloves','clove','sticks','stick',
-  'slices','slice','pieces','piece','sprigs','sprig','stalks','stalk','ears','ear','loaves','loaf',
-  'pinch','pinches','dash','dashes','handful','handfuls','splash','sprinkle','drizzle',
-];
 /* \b BEFORE the optional period. With the period first, "tsp. Black pepper"
    found no word boundary after "." and backtracked to "tsp" + ". Black
    pepper" — and every abbreviated unit in a recipe left its full stop on the
@@ -2323,6 +2434,234 @@ export function dinnerIntent(body, opts = {}) {
   const clean = dish.replace(/\s+/g, ' ').trim();
   if (!clean) return null;
   return { intent: 'dinner', dish: clean, date };
+}
+
+/* ===========================================================================
+ * 18. WEEKLY ADS
+ *
+ * The weekly ad is a web page, copied. What arrives is messy: a brand-first
+ * name on one line and "$2.99 lb" on the next, "2/$5", "BOGO", "save $1.00",
+ * a validity line at the top, size strings glued to names. This reads it
+ * into rows the shopping list can match against — never a sign-in, never a
+ * scrape; the family pastes, the app reads.
+ *
+ * name_key is the name as the CATALOG would spell it, through the same
+ * normalizer the list uses (parseShopping), so "H-E-B Whole Milk 1 gal"
+ * keys to "whole milk" and matches the milk already on the list.
+ * ========================================================================= */
+
+const AD_MAX = 300;
+const AD_RE = {
+  /* The offers, most specific first. */
+  MULTI  : /\b(\d+)\s*(?:\/\s*\$\s*|for\s+\$?\s*)(\d+(?:\.\d{1,2})?)\b/i,               // 2/$5, 10 for $10 (not 9/10, a date)
+  BOGO   : /\b(?:bogo(?:\s*free)?|b1g1(?:\s*free)?|buy\s+(?:one|1)\s*,?\s*get\s+(?:one|1)(?:\s+free)?(?:\s+\d+%?\s*off)?)\b/i,
+  SAVE   : /\b(?:save|saves?)\s+\$?\s*(\d+(?:\.\d{1,2})?)(?:\s*(?:on|off))?\b/i,        // save $1.50
+  OFF    : /\$\s*(\d+(?:\.\d{1,2})?)\s*off\b|\b(\d+(?:\.\d+)?)\s*%\s*off\b/i,           // $1 off, 25% off
+  PRICE  : /(?:^|[\s(])\$?\s*(\d{0,3}\.\d{2})(?!\d)\s*(\/\s*lb|\/\s*ea|per\s+lb|per\s+pound|lb|ea|each|per\s+ea)?\b|(?:^|[\s(])\$\s*(\d{1,3})(?!\.\d)\b\s*(\/\s*lb|lb|ea|each)?/i,
+  COUPON : /\b(?:with\s+(?:an?\s+)?(?:in-?store\s+|digital\s+)?coupons?|coupons?|clip(?:ped)?|digital|in-?store\s+coupon|load\s+to\s+card)\b/i,
+  CARD   : /\b(?:with\s+card|w\/\s*card|card\s+price|loyalty)\b/i,
+  SIZE   : /\b(?:\d+(?:\.\d+)?\s*(?:-|–|to)\s*)?\d+(?:\.\d+)?\s*(?:fl\s*)?(?:oz|ounces?|lbs?|pounds?|ct|count|pk|pack|gal(?:lon)?s?|qt|quarts?|pt|pints?|l|liters?|litres?|ml|g|grams?|kg|rolls?|sheets?|loads?)\b\.?|\b(?:half\s+gallon|gallon|quart|pint|dozen|each|ea|per\s+lb|per\s+pound|lb\.?)\b/i,
+  NOISE  : /^(?:weekly\s+ad|digital\s+coupons?|coupons?|this\s+week'?s?\s+deals?|deals?|specials?|page\s+\d+|produce|meat|dairy|bakery|deli|frozen|grocery|pantry|snacks|beverages|household|pharmacy|seafood|view\s+all|see\s+all|shop\s+now|add\s+to\s+list|clip\s+coupon|clip|expires?\s+.*|exp\.?\s+.*|valid\s+.*|limit\s+\d+.*|while\s+supplies\s+last.*|see\s+store.*)$/i,
+  VALID  : /\b(?:valid|prices?\s+good|good|effective|sale\s+dates?|offers?\s+good|dates?)\b[:\s]*(.+)$/i,
+  DAYNAME: /\b(?:sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(?:day|nesday|rsday|urday|sday)?\.?,?\s*/gi,
+};
+
+/* Prices shaped like "2.99" with no "$" are still prices in an ad. */
+function findDeal(line) {
+  const t = String(line);
+  let m;
+  if ((m = t.match(AD_RE.BOGO)))  return { kind: 'deal', text: /bogo|b1g1/i.test(m[0]) ? 'BOGO' : m[0].replace(/\s+/g, ' '), index: m.index, len: m[0].length };
+  if ((m = t.match(AD_RE.MULTI))) return { kind: 'deal', text: `${m[1]}/$${m[2]}`, index: m.index, len: m[0].length };
+  if ((m = t.match(AD_RE.SAVE)))  return { kind: 'deal', text: `save $${m[1]}`, index: m.index, len: m[0].length };
+  if ((m = t.match(AD_RE.OFF)))   return { kind: 'deal', text: m[1] ? `$${m[1]} off` : `${m[2]}% off`, index: m.index, len: m[0].length };
+  if ((m = t.match(AD_RE.PRICE))) {
+    const amt = (m[1] || m[3]).replace(/^\./, '0.'); const per = (m[2] || m[4] || '').replace(/\s+/g, '');
+    const unit = /lb|pound/i.test(per) ? '/lb' : per ? ' ea' : '';
+    return { kind: 'price', text: `$${amt}${unit}`, index: m.index, len: m[0].length };
+  }
+  return null;
+}
+
+/* The name as the catalog would spell it. */
+function adNameKey(name, opts) {
+  const base = String(name).replace(AD_RE.SIZE, ' ').replace(/[®™]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!base) return '';
+  const r = parseShopping(base, { stores: [], catalog: opts.catalog || [] });
+  const items = r.items || [];
+  const cat = (opts.catalog || []);
+  const exact = items.find(i => cat.some(c => c.name.toLowerCase() === i.name.toLowerCase()));
+  if (exact) return exact.name.toLowerCase();
+  const known = items.filter(i => i.category !== 'other').sort((a, b) => b.name.length - a.name.length)[0];
+  if (known) return known.name.toLowerCase();
+  return base.toLowerCase().replace(/[^a-z0-9 &'-]/g, '').trim();
+}
+
+/* opts: { stores, catalog, now } */
+export function parseAd(text, opts = {}) {
+  const now = opts.now || new Date();
+  const today = ymd(now);
+  const out = { store: null, valid_from: today, valid_to: plusDays(today, 6), rows: [], skipped: 0 };
+  const lines = String(text || '').split(/\r?\n/).map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!lines.length) return out;
+
+  /* Header: the store, and the dates the prices hold. */
+  const head = lines.slice(0, 12).join('\n');
+  const st = routeStoreIn(opts.stores || [], head) || routeStoreIn(opts.stores || [], head.replace(/-/g, ''));
+  if (st) out.store = st;
+  /* A digital-coupon page is coupons all the way down. */
+  const docCoupon = /\b(?:digital\s+coupons?|clip\s+coupons?|coupons?\s+page)\b/i.test(head);
+  let validLine = -1;
+  lines.slice(0, 12).forEach((l, i) => {
+    const m = l.match(AD_RE.VALID);
+    if (!m || validLine >= 0) return;
+    const tail = m[1].replace(AD_RE.DAYNAME, '').replace(/[.,]$/, '').trim();
+    const r = dateRange(tail, { now });
+    if (r && r.to > r.from) { out.valid_from = r.from; out.valid_to = r.to; validLine = i; }
+  });
+  if (validLine >= 0) lines.splice(validLine, 1);
+
+  let pendingName = null, pendingCoupon = false;
+  const push = (name, deal, coupon, raw, tail) => {
+    if (out.rows.length >= AD_MAX) { out.skipped++; return; }
+    let clean = name.replace(/[®™*]/g, ' ').replace(/\s+/g, ' ').replace(/[\s,;:\-–]+$/, '').trim();
+    const size = (clean.match(AD_RE.SIZE) || [])[0];
+    if (size) clean = clean.replace(AD_RE.SIZE, ' ').replace(/\s+/g, ' ').replace(/[\s,;:\-–]+$/, '').trim();
+    if (!clean || /^\d+$/.test(clean)) { out.skipped++; return; }
+    const extras = [size, tail].filter(Boolean).map(x => x.trim()).filter(Boolean);
+    const row = {
+      name: clean, name_key: adNameKey(clean, opts),
+      price: deal.kind === 'price' ? deal.text : null,
+      deal:  deal.kind === 'deal'  ? deal.text : null,
+      coupon: !!coupon || docCoupon, raw
+    };
+    if (extras.length) {
+      const k = row.price != null ? 'price' : 'deal';
+      row[k] = `${row[k]} · ${extras.join(' ')}`;
+    }
+    out.rows.push(row);
+  };
+
+  /* "milk 2.49, eggs 3/$5" — two offers on one line are two lines. */
+  const flat = [];
+  for (const line of lines) {
+    const segs = line.split(/\s*[,;]\s*/);
+    if (segs.length > 1 && segs.filter(x => findDeal(x)).length >= 2) flat.push(...segs);
+    else flat.push(line);
+  }
+
+  for (const line of flat) {
+    if (AD_RE.NOISE.test(line)) { pendingName = null; pendingCoupon = false; continue; }
+    const coupon = AD_RE.COUPON.test(line);
+    const deal = findDeal(line);
+    if (!deal) {
+      /* A name, waiting for its price on the next line. */
+      pendingName = line.replace(AD_RE.COUPON, ' ').replace(/\s+/g, ' ').trim() || null;
+      pendingCoupon = coupon;
+      continue;
+    }
+    const before = line.slice(0, deal.index).replace(AD_RE.COUPON, ' ').replace(AD_RE.CARD, ' ').replace(/\s+/g, ' ').trim();
+    let after = line.slice(deal.index + deal.len).replace(AD_RE.COUPON, ' ').replace(/[,.;]+$/, '').replace(/\s+/g, ' ').trim();
+    const card = AD_RE.CARD.test(line) ? 'with card' : '';
+    after = after.replace(AD_RE.CARD, ' ').replace(/\s+/g, ' ').trim();
+    const tail = [after, card].filter(Boolean).join(' ');
+    const nameOnLine = before.replace(/[\s,;:\-–]+$/, '');
+    if (nameOnLine && !/^\d+$/.test(nameOnLine)) {
+      if (pendingName) out.skipped++;                 // a name that never got its price
+      push(nameOnLine, deal, coupon || (pendingCoupon && !pendingName), line, tail);
+    } else if (pendingName) {
+      push(pendingName, deal, coupon || pendingCoupon, `${pendingName} / ${line}`, tail);
+    } else {
+      out.skipped++;
+    }
+    pendingName = null; pendingCoupon = false;
+  }
+  if (pendingName) out.skipped++;
+  return out;
+}
+
+/* Is a paste a weekly ad? Three or more priced rows. */
+export function looksLikeAd(text, opts = {}) {
+  const lines = String(text || '').split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 3) return false;
+  let priced = 0;
+  for (const l of lines) { if (findDeal(l)) priced++; if (priced >= 3) return true; }
+  return false;
+}
+
+/* ===========================================================================
+ * 19. THE CAST, SAID OUT LOUD — and the headcount
+ *
+ * "Jess drives", "Erich brings them back": one table for how a role reads,
+ * shared by the app's cards and the text number's answers, so they never
+ * say it two ways. And the rule for editing a cast: a person is going,
+ * helping, or a maybe (one of those) and may hold one ride role on top.
+ * ========================================================================= */
+export function roleVerb(name, role) {
+  switch (role) {
+    case 'driving': return `${name} drives`;
+    case 'dropoff': return `${name} takes them`;
+    case 'pickup':  return `${name} brings them back`;
+    case 'helping': return `${name} helps`;
+    case 'optional':return `${name} maybe`;
+    default:        return name;
+  }
+}
+
+/* The cast as a card reads it: going names first, then the ride and helper
+   phrases. people: [{name, role}]. */
+export function castLine(people) {
+  const RIDE = ['driving', 'dropoff', 'pickup'];
+  const going = [], other = [];
+  for (const p of people || []) {
+    if (p.role === 'going') going.push(p.name);
+    else if (RIDE.includes(p.role) || p.role === 'helping' || p.role === 'optional') other.push(roleVerb(p.name, p.role));
+  }
+  return [going.join(', '), ...other].filter(Boolean).join(' · ');
+}
+
+const PRESENCE = ['going', 'helping', 'optional'];
+const RIDES    = ['driving', 'dropoff', 'pickup'];
+/* Toggle one role on a member's set. Presence roles replace each other;
+   ride roles replace each other; a ride can sit on top of a presence. */
+export function toggleCastRole(roles, role) {
+  const set = new Set(roles || []);
+  if (set.has(role)) { set.delete(role); return [...set]; }
+  const group = PRESENCE.includes(role) ? PRESENCE : RIDES.includes(role) ? RIDES : [role];
+  for (const g of group) set.delete(g);
+  set.add(role);
+  return [...PRESENCE, ...RIDES].filter(r => set.has(r));
+}
+
+/* "Addie's at church, 3 for dinner" / "dinner for 3" / "just 2 for dinner
+   tomorrow" → { intent:'headcount', n, date, note }. A clock in the sentence
+   is ignored: "3 for dinner at 6" is a headcount, the time is the meal's
+   ready_by and is set elsewhere. */
+const HEAD_RE = {
+  LEAD : /^(.+?)(?:'s|\s+is|\s+are)\s+(?:at|out|away)\s+(.+?)[,;:—-]+\s*/i,
+  N    : /^(?:just|only)?\s*(\d{1,2})\s+(?:people\s+)?for\s+(?:dinner|supper)(?:\s+(tonight|today|tomorrow|tmrw))?(?:\s+at\s+\d.*)?$/i,
+  FOR  : /^(?:dinner|supper)\s+(?:is\s+)?for\s+(?:just\s+|only\s+)?(\d{1,2})(?:\s+(tonight|today|tomorrow|tmrw))?(?:\s+at\s+\d.*)?$/i,
+};
+/* "same as last week" — copy last week's dinners onto the week ahead. */
+const REPEAT_WEEK_RE = /^(?:(?:same|repeat|copy|do)\s+(?:as\s+)?last\s+week(?:'s)?(?:\s+(?:dinners|meals|menu))?|last\s+week(?:'s)?\s+(?:dinners|meals|menu)\s+again)[.!]*$/i;
+export function repeatWeekIntent(body) {
+  return REPEAT_WEEK_RE.test(String(body || '').trim()) ? { intent: 'repeat_week' } : null;
+}
+
+export function headcountIntent(body, opts = {}) {
+  let text = String(body || '').trim().replace(/[.!]+$/, '');
+  const now = opts.now || new Date();
+  let note = null, m;
+  if ((m = text.match(HEAD_RE.LEAD))) {
+    const who = whoIn(m[1], opts.members || []);
+    note = `${who[0] || m[1].trim()} at ${m[2].trim()}`;
+    text = text.slice(m[0].length).trim();
+  }
+  let n = null, dayWord = null;
+  if ((m = text.match(HEAD_RE.N)))        { n = +m[1]; dayWord = m[2] || null; }
+  else if ((m = text.match(HEAD_RE.FOR))) { n = +m[1]; dayWord = m[2] || null; }
+  if (!n) return null;
+  const date = dayWord ? (oneDate(dayWord, now) || ymd(now)) : ymd(now);
+  return { intent: 'headcount', n, date, note };
 }
 
 /* Split a pasted block into ingredient lines. Headings like "For the sauce:"

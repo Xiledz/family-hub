@@ -502,6 +502,28 @@ button{cursor:pointer}
 .tdinner{margin:4px 0 10px;font-size:14px;color:var(--ink2)}
 .tdinner .tdlabel{font-weight:700;color:var(--ink3);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
 .tdinner.mdone{text-decoration:line-through;opacity:.6}
+/* sales: readable in both themes — the accent is ink, never a fill behind white text */
+.sale{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:700;
+  color:var(--accent);border:1px solid var(--accent);background:transparent;vertical-align:1px}
+.coupon{display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:10.5px;font-weight:700;
+  background:var(--soft);color:var(--ink2);border:1px solid var(--line);vertical-align:1px}
+.clip{margin-left:6px;font-size:11.5px;font-weight:700;color:var(--accent);text-decoration:underline}
+.adtable{width:100%;border-collapse:collapse;font-size:14px}
+.adtable td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top}
+.adtable td.adp{white-space:nowrap;text-align:right;color:var(--ink2)}
+.okmark{color:var(--accent);font-weight:700}
+/* the cast editor */
+#ev-who{display:block}
+.castrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.castrow:last-of-type{border-bottom:0}
+.castname{display:flex;align-items:center;gap:6px;font-weight:600;font-size:14px;min-width:64px}
+.castchips{display:flex;gap:5px;flex-wrap:wrap}
+.chip.mini{padding:5px 9px;font-size:12px}
+.homeline{font-size:13px;color:var(--ink2);margin:-4px 0 10px}
+.homeline .link{margin-left:6px}
+.stepper{display:inline-flex;align-items:center;gap:6px;margin-left:8px}
+.pfilter{margin:0 0 10px}
+.stepper button{width:28px;height:28px;border-radius:50%;border:1.5px solid var(--line);background:transparent;color:var(--ink);font-size:16px;line-height:1}
 .hnname{flex:1;min-width:0;font-size:15px}
 .hnwhy{font-size:11px;color:var(--ink3);white-space:nowrap}
 .staple{flex:0 0 auto;border:0;background:transparent;color:var(--line);font-size:18px;cursor:pointer;padding:0 2px}

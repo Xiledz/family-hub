@@ -375,6 +375,30 @@ order("what's for dinner",         'ask_dinner');
   if (!ok) { console.log(`      got ${JSON.stringify(r)}`); fail++; } else pass++;
 }
 
+/* --- HEADCOUNT ----------------------------------------------------------------
+   "3 for dinner" is a number for the cook, not a meal and not an event. A
+   clock in the sentence does not change that: "3 for dinner at 6" is still
+   the headcount (the time is the meal's ready_by, set elsewhere). */
+order("Addie's at church, 3 for dinner", 'headcount');
+order('3 for dinner tonight',            'headcount');
+order('dinner for 3',                    'headcount');
+order('just 2 for dinner tomorrow',      'headcount');
+order('3 for dinner at 6',               'headcount');
+order('dinner at 6',                     'event');
+order('dinner is leftovers',             'dinner');
+{
+  const r = routeIntent("Addie's at church, 3 for dinner tomorrow", { stores: STORES, members: ROSTER, now: NOW, me: 'Erich' });
+  const ok = r.n === 3 && r.date === '2026-09-11' && r.note === 'Addie at church';
+  console.log((ok ? 'PASS  ' : 'FAIL  ') + 'headcount carries n, day and the note');
+  if (!ok) { console.log(`      got ${JSON.stringify(r)}`); fail++; } else pass++;
+}
+
+/* --- "same as last week" — the Sunday reply ---------------------------------- */
+order('same as last week',        'repeat_week');
+order('repeat last week',         'repeat_week');
+order("copy last week's dinners", 'repeat_week');
+order('last week was fine',       'ask');
+
 /* Plain messages are not diverted at all. */
 order('buy milk',            'shop');
 order('remove milk',         'remove');
