@@ -11,6 +11,7 @@
  * grammar, two front doors.
  * ==========================================================================*/
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import webpush from 'npm:web-push@3.6.7';
 
 
 /* ===========================================================================
@@ -1616,6 +1617,10 @@ function routeIntent(body, opts = {}, from = 0) {
   const next   = () => routeIntent(text, opts, from + 1);
 
   /* 0 */ if (from <= 0) {
+    /* A kid asking for a ride (§21). Only when the handler says the sender
+       is a kid; an adult's identical words never come here. */
+    const ride = rideRequestIntent(text, opts);
+    if (ride) return ride;
     if (ROUTE_RE.LIST_CMD.test(text))  return { intent: 'show', store: null };
     /* "my list" / "todos" / "chores". Bare "list" stays shopping above,
        because the family already learned it that way. */
@@ -2699,6 +2704,60 @@ function splitIngredientBlock(text) {
     .filter(l => l && !/^(?:for the\b|.*:\s*$)/i.test(l) && !/^ingredients\b/i.test(l));
 }
 
+/* ===========================================================================
+ * 21. A KID ASKING FOR A RIDE
+ *
+ * "can someone pick me up at 5" / "I need a ride home from practice" /
+ * "need a ride at 5:30". Only a teen or child sends this; the handler
+ * passes opts.kid for them and NOTHING else, so an adult typing the same
+ * words routes exactly as before (an adult asking "can someone pick me up"
+ * is a calendar note, not a request the family number can broker).
+ *
+ * The clock has no am/pm nearly every time. A ride is asked for after
+ * school, so a bare 1–8 is PM, 9–11 is AM, 12 is noon. "now" and
+ * "in 20 min" are honoured; no clock at all means "as soon as someone can".
+ * Where they are ("from practice", "at school") is kept as a word for the
+ * parents' text; "home" is the destination, never the place.
+ * ==========================================================================*/
+const RIDE_REQ = {
+  ASK: /^(?:hey\s+|hi\s+|um\s+)?(?:(?:can|could|will|would|is\s+anyone\s+able\s+to)\s+(?:someone|somebody|anyone|anybody|you|u|mom|dad|mum|mama|papa|\w+)\s+(?:please\s+)?(?:come\s+(?:and\s+)?)?(?:pick\s+me\s+up|get\s+me|grab\s+me|come\s+get\s+me)|(?:i\s+)?(?:need|needs|want)\s+(?:a\s+)?(?:ride|lift|pick\s*up|pickup)|(?:can|could)\s+i\s+get\s+a\s+(?:ride|lift)|(?:pick\s+me\s+up|come\s+get\s+me|come\s+pick\s+me\s+up)|(?:ride|pickup|pick\s*up)\s+(?:please|pls|plz))\b/i,
+  CLOCK: /\b(?:at|by|around|about|@)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.|a|p)?\b|\b(\d{1,2}):(\d{2})\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b/i,
+  IN:    /\bin\s+(?:about\s+|like\s+)?(\d{1,3})\s*(min(?:ute)?s?|hours?|hrs?)\b|\bin\s+(?:an?|one)\s+hour\b|\bin\s+half\s+an\s+hour\b/i,
+  NOW:   /\b(?:right\s+)?now\b|\basap\b|\bas\s+soon\s+as\b/i,
+  WHERE: /\b(?:from|at|outside|in\s+front\s+of)\s+(?:the\s+)?([a-z][a-z' ]*?)(?=\s+(?:at|by|around|about|@|in)\s+\d|\s*[,.!?]|\s+(?:please|pls|plz|now|asap|today|tonight)\b|\s*$)/i,
+  NOT_PLACE: /^(?:home|house|me|it|\d+|(?:\d+\s*)?(?:am|pm))$/i
+};
+function rideRequestIntent(body, opts = {}) {
+  if (!opts.kid) return null;
+  const text = String(body || '').trim().replace(/\s+/g, ' ');
+  if (!RIDE_REQ.ASK.test(text)) return null;
+  let time = null, inMin = null, m;
+  if ((m = text.match(RIDE_REQ.CLOCK))) {
+    let h = +(m[1] ?? m[4] ?? m[7]), mi = +(m[2] ?? m[5] ?? 0);
+    const ap = (m[3] ?? m[6] ?? m[8] ?? '').toLowerCase().replace(/\./g, '');
+    if (h >= 1 && h <= 12 && mi < 60) {
+      if (ap.startsWith('p'))      { if (h !== 12) h += 12; }
+      else if (ap.startsWith('a')) { if (h === 12) h = 0; }
+      else if (h <= 8)             { h += 12; }               // 5 → 5 PM; 12 → noon stays
+      else if (h < 12) {                                       // 9–11: AM unless it has passed
+        const nh = (opts.now || new Date()).getHours();
+        if (nh >= h) h += 12;
+      }
+      time = `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+    }
+  } else if ((m = text.match(RIDE_REQ.IN))) {
+    if (/half/.test(m[0])) inMin = 30;
+    else if (!m[1]) inMin = 60;
+    else inMin = /h/i.test(m[2]) ? +m[1] * 60 : +m[1];
+  } else if (RIDE_REQ.NOW.test(text)) {
+    inMin = 0;
+  }
+  let where = null;
+  const w = text.replace(RIDE_REQ.CLOCK, ' ').match(RIDE_REQ.WHERE);
+  if (w && !RIDE_REQ.NOT_PLACE.test(w[1].trim())) where = w[1].trim().toLowerCase();
+  return { intent: 'ride_request', time, inMin, where };
+}
+
 const admin = () => createClient(
   Deno.env.get('SUPABASE_URL')!,
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -2707,6 +2766,207 @@ const admin = () => createClient(
 
 const HOUSEHOLD = Deno.env.get('HOUSEHOLD_ID')!;
 const TW_TOKEN  = Deno.env.get('TWILIO_TOKEN') ?? '';
+
+/* Outbound, for the one thing this function says to someone OTHER than the
+   sender: a kid's ride request goes to both parents, and the answer goes
+   back to the kid. Same chain as the dispatcher and the digest; same
+   secrets, which are project-wide. */
+const VAPID_PUBLIC  = Deno.env.get('VAPID_PUBLIC_KEY')  ?? '';
+const VAPID_PRIVATE = Deno.env.get('VAPID_PRIVATE_KEY') ?? '';
+const VAPID_SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:family@example.com';
+const TWILIO_SID    = Deno.env.get('TWILIO_SID')   ?? '';
+const TWILIO_FROM   = Deno.env.get('TWILIO_FROM')  ?? '';
+if (VAPID_PUBLIC && VAPID_PRIVATE) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
+const OUT_ENV = {
+  webpush: (VAPID_PUBLIC && VAPID_PRIVATE) ? webpush : null,
+  TWILIO_SID, TWILIO_TOKEN: TW_TOKEN, TWILIO_FROM
+};
+
+/* ============================================================================
+ * Family Hub — the delivery chain
+ *
+ * ONE answer to "get this message to this person", used by every sender:
+ * the reminder dispatcher, the morning digest, and the todo nag.
+ *
+ * WHY THIS EXISTS
+ *   Channel used to be decided when a reminder was WRITTEN — sometimes months
+ *   ahead — by counting push subscriptions that did not exist yet. Bryce had
+ *   five reminders stamped 'push' against a table that has never held a row.
+ *   They were not pending; they were dead on arrival, decided by a fact that
+ *   was already false when it was written down.
+ *
+ *   A channel is not a property of a message. It is a property of the moment
+ *   you try to send it. So nothing chooses a channel in advance any more:
+ *   deliver() walks a chain at send time and writes down what it actually
+ *   used.
+ *
+ * THE CHAIN, in order, first success wins:
+ *   1. push      — every device this person has registered
+ *   2. sms       — their own phone
+ *   3. guardian  — the person named in members.notify_via_member_id, with the
+ *                  message prefixed so the recipient knows who it is about
+ *   4. nothing   — recorded as a failure and left alone
+ *
+ *   A nine-year-old with no phone is the ordinary case in a family app, not
+ *   an error. Step 3 is what makes him reachable.
+ *
+ * NO RETRIES. A failed send is not retried later — the next morning's digest
+ * is the retry, and the app itself is the channel of last resort. Retrying a
+ * reminder for an event that already started is worse than silence.
+ *
+ * THIS FILE IS COPIED, NOT IMPORTED. Supabase's bundler refuses remote hosts
+ * and its in-browser editor drops second files on deploy, so this block lives
+ * verbatim inside each edge function. drift.test.mjs fails the moment the
+ * copies stop matching. Same arrangement as parse.js.
+ * ==========================================================================*/
+
+const DELIVER_BUILD = '2026-09-10a';
+
+/* Every attempt is written to `deliveries` — successes and failures both.
+   This is not a debug log. It is the answer to "was Bryce actually told?",
+   and it is what the todo nag reads so it never pings twice in one day. */
+async function logDelivery(db: any, row: {
+  household_id: string; member_id: string | null; on_behalf_of?: string | null;
+  kind: string; ref_id?: string | null; channel: string | null;
+  ok: boolean; detail?: string | null;
+}) {
+  try {
+    await db.from('deliveries').insert({
+      household_id: row.household_id,
+      member_id:    row.member_id,
+      on_behalf_of: row.on_behalf_of ?? null,
+      kind:         row.kind,
+      ref_id:       row.ref_id ?? null,
+      channel:      row.channel,
+      ok:           row.ok,
+      detail:       row.detail ? String(row.detail).slice(0, 500) : null
+    });
+  } catch (_e) {
+    /* Never let bookkeeping sink a send that otherwise worked. */
+  }
+}
+
+async function pushTo(db: any, webpush: any, memberId: string, title: string,
+                      body: string, tag: string, url: string): Promise<number> {
+  const { data: subs } = await db.from('push_subscriptions').select('*').eq('member_id', memberId);
+  if (!subs?.length) return 0;
+
+  const payload = JSON.stringify({ title, body, tag, url });
+  let ok = 0;
+
+  for (const s of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
+      await db.from('push_subscriptions')
+        .update({ last_ok_at: new Date().toISOString() }).eq('id', s.id);
+      ok++;
+    } catch (e: any) {
+      /* 404/410 means the home-screen icon is gone. Prune it, or we retry a
+         dead endpoint forever and the person looks reachable when they are
+         not. Any other error is this endpoint's problem, not the chain's —
+         another device may still work. */
+      if (e?.statusCode === 404 || e?.statusCode === 410) {
+        await db.from('push_subscriptions').delete().eq('id', s.id);
+      }
+    }
+  }
+  return ok;
+}
+
+async function smsTo(sid: string, token: string, from: string, to: string, text: string) {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + btoa(`${sid}:${token}`),
+               'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ To: to, From: from, Body: text })
+  });
+  if (!res.ok) throw new Error(`twilio ${res.status}: ${(await res.text()).slice(0, 200)}`);
+}
+
+/* The one entry point.
+ *
+ *   member  — the members row (needs id, name, phone, notify_via_member_id)
+ *   title   — short line; becomes the push title, and is prepended for SMS
+ *   body    — the detail
+ *   kind    — 'reminder' | 'digest' | 'nag' | 'reply' | 'welcome'
+ *   refId   — the event, todo or whatever this is about, for the log
+ *
+ * Returns what happened. Never throws: a sender that crashes on one person
+ * stops delivering to everybody else, and the whole point of a chain is that
+ * one broken link is survivable.
+ */
+async function deliver(db: any, env: {
+  webpush?: any; TWILIO_SID: string; TWILIO_TOKEN: string; TWILIO_FROM: string;
+}, member: any, msg: {
+  householdId: string; title: string; body: string; kind: string;
+  refId?: string | null; tag?: string; url?: string;
+}, _viaFor?: any): Promise<{ ok: boolean; channel: string | null; detail: string }> {
+
+  const onBehalfOf = _viaFor ? _viaFor.id : null;
+  const smsText = _viaFor
+    ? `For ${_viaFor.name}: ${msg.title} — ${msg.body}`
+    : `${msg.title} — ${msg.body}`;
+  const pushTitle = _viaFor ? `${_viaFor.name}: ${msg.title}` : msg.title;
+
+  const log = (channel: string | null, ok: boolean, detail: string) =>
+    logDelivery(db, {
+      household_id: msg.householdId, member_id: member?.id ?? null,
+      on_behalf_of: onBehalfOf, kind: msg.kind, ref_id: msg.refId ?? null,
+      channel, ok, detail
+    });
+
+  if (!member?.id) {
+    await log(null, false, 'no member');
+    return { ok: false, channel: null, detail: 'no member' };
+  }
+
+  /* 1. push */
+  if (env.webpush) {
+    try {
+      const n = await pushTo(db, env.webpush, member.id, pushTitle, msg.body,
+                             msg.tag ?? 'fh', msg.url ?? './index.html');
+      if (n > 0) {
+        await log('push', true, `${n} device${n === 1 ? '' : 's'}`);
+        return { ok: true, channel: 'push', detail: `${n} device(s)` };
+      }
+    } catch (e) {
+      await log('push', false, String(e));
+    }
+  }
+
+  /* 2. their own phone */
+  if (member.phone && env.TWILIO_SID && env.TWILIO_TOKEN && env.TWILIO_FROM) {
+    try {
+      await smsTo(env.TWILIO_SID, env.TWILIO_TOKEN, env.TWILIO_FROM, member.phone, smsText);
+      await log('sms', true, member.phone);
+      return { ok: true, channel: 'sms', detail: member.phone };
+    } catch (e) {
+      await log('sms', false, String(e));
+      /* Fall through to the guardian. A Twilio failure for one number is
+         exactly the case where somebody else should hear about it. */
+    }
+  }
+
+  /* 3. the guardian — ONE hop, never a chain of them. Two members pointing at
+        each other would otherwise loop until the function times out. */
+  if (!_viaFor && member.notify_via_member_id) {
+    const { data: g } = await db.from('members')
+      .select('id, name, phone, notify_via_member_id')
+      .eq('id', member.notify_via_member_id).maybeSingle();
+
+    if (g && g.id !== member.id) {
+      const r = await deliver(db, env, g, msg, member);
+      if (r.ok) return { ok: true, channel: r.channel, detail: `via ${g.name}` };
+    }
+  }
+
+  /* 4. nowhere left to go. */
+  await log(null, false, 'no route');
+  return { ok: false, channel: null, detail: 'no route: no device, no phone, no guardian' };
+}
+/* ===== end delivery chain ================================================ */
+
 
 /* ---------------------------------------------------------------------------
  * TIMEZONE
@@ -2737,7 +2997,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-12f-m2';
+const BUILD = '2026-09-12g-m2';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
@@ -3998,6 +4258,200 @@ function scoreTitle(needle: string, hay: string) {
   return a.filter(w => b.includes(w)).length / a.length;
 }
 
+/* ===========================================================================
+ * A KID ASKING FOR A RIDE  (parse.js §21)
+ *
+ * "can someone pick me up at 5" from Addie. Both parents get ONE text —
+ * "Addie needs a pickup at 5:00 PM. Reply ME to take it." — as an open
+ * question (sms_pending kind 'rides', the kind 016 added; payload.ask tells
+ * the two uses apart). First ME wins:
+ *   - the claimer gets the leave alert: a pickup role on her occurrence when
+ *     one of hers ends (or starts) within 45 minutes of the time and is not
+ *     a series — a role on a series row would make them the pickup for every
+ *     practice — otherwise a small event "Pick up Addie" at that time with
+ *     the claimer as pickup, which is what carries the reminder (013 says a
+ *     reminder must have a subject).
+ *   - Addie hears "Dad's got you at 5:00 PM."; the other parent hears
+ *     "Erich has it." and their copy of the question is closed, so a late
+ *     ME gets "Erich already has it" instead of filing an event called Me.
+ * Nobody in 20 minutes: the dispatcher (which runs every minute) finds the
+ * stale question and tells Addie "Nobody has answered yet — call Mom."
+ * nudge_log (kind 'ride:<id>', member = the kid) is the single record of
+ * "this request is settled", written by whichever of claim / nag gets
+ * there first; the other one sees the conflict and stays quiet.
+ * ========================================================================= */
+const isKidRole = (m: any) => ['teen', 'child'].includes(String(m?.role ?? ''));
+const RIDE_CLAIM_KEYS = ['me', 'i got it', 'i got this', 'i can', 'i will', "i'll", 'ill', 'i got her', 'i got him',
+                         'got it', 'got her', 'got him', 'mine', 'on it', 'yes', 'ok', 'sure', 'i have it', 'i have her', 'i have him'];
+const RIDE_PASS_KEYS  = ["can't", 'cant', 'cannot', 'not me', 'no', 'nope', 'busy', "i can't", 'i cant'];
+
+/* "Dad" if the family calls them that, else the name. */
+function familyName(m: any) {
+  const al = (m?.aliases ?? []).map((a: string) => a.toLowerCase());
+  if (al.includes('dad') || al.includes('daddy') || al.includes('papa')) return 'Dad';
+  if (al.includes('mom') || al.includes('mommy') || al.includes('mama') || al.includes('mum')) return 'Mom';
+  return m?.name ?? 'someone';
+}
+const parentsOf = (members: any[], kid: any) =>
+  (members ?? []).filter((m: any) => ['owner', 'adult'].includes(m.role) && m.phone && m.id !== kid.id)
+    .sort((a: any, b: any) => (a.id === kid.notify_via_member_id ? -1 : 0) - (b.id === kid.notify_via_member_id ? -1 : 0));
+const clockShort = (iso: string, tz: string) => clock(utcToWall(iso, tz)).replace(/ \(.*\)$/, '');
+const rideWhen = (pl: any, tz: string) => pl.at ? `at ${clockShort(pl.at, tz)}` : 'as soon as someone can';
+
+async function requestRide(db: any, routed: any, sender: any, members: any[], tz: string, now: Date) {
+  const parents = parentsOf(members, sender);
+  const guardian = members.find((m: any) => m.id === sender.notify_via_member_id && m.id !== sender.id);
+  if (!parents.length) return twiml(`Nobody to ask from here — call ${guardian ? familyName(guardian) : 'a parent'}.`);
+
+  const date = ymd(now);
+  let at: string | null = null;
+  if (routed.time) at = wallToUtc(date, routed.time, tz);
+  else if (routed.inMin != null) at = new Date(Date.now() + routed.inMin * 60_000).toISOString();
+  const reqId = crypto.randomUUID();
+  const askedAt = new Date().toISOString();
+  const payload = { ask: 'kid_ride', reqId, kidId: sender.id, kidName: sender.name, date, at,
+                    where: routed.where ?? null, askedAt };
+  const options = [
+    { keys: RIDE_CLAIM_KEYS, value: 'claim' },
+    { keys: RIDE_PASS_KEYS,  value: 'pass' },
+  ];
+  const text = `${sender.name} needs a pickup ${rideWhen(payload, tz)}` +
+               `${payload.where ? ` from ${payload.where}` : ''}. Reply ME to take it.`;
+
+  const asked: string[] = [];
+  for (const p of parents) {
+    /* 30 minutes on the row; the dispatcher nags the kid at 20 and closes
+       it, so the inbound sweep never deletes it first. */
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: p.id, kind: 'rides', payload, options,
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    /* A question that needs a texted reply goes by text, not by push. */
+    try {
+      if (TWILIO_SID && TW_TOKEN && TWILIO_FROM) {
+        await smsTo(TWILIO_SID, TW_TOKEN, TWILIO_FROM, p.phone, text);
+        await logDelivery(db, { household_id: HOUSEHOLD, member_id: p.id, on_behalf_of: sender.id,
+                                kind: 'ride_ask', ref_id: reqId, channel: 'sms', ok: true, detail: p.phone });
+        asked.push(familyName(p));
+      } else {
+        await logDelivery(db, { household_id: HOUSEHOLD, member_id: p.id, on_behalf_of: sender.id,
+                                kind: 'ride_ask', ref_id: reqId, channel: null, ok: false, detail: 'no twilio env' });
+      }
+    } catch (e) {
+      await logDelivery(db, { household_id: HOUSEHOLD, member_id: p.id, on_behalf_of: sender.id,
+                              kind: 'ride_ask', ref_id: reqId, channel: 'sms', ok: false, detail: String(e) });
+    }
+  }
+  if (!asked.length) return twiml(`Couldn't reach anyone from here — call ${guardian ? familyName(guardian) : 'a parent'}.`);
+  return twiml(`Asked ${asked.join(' and ')}. I'll tell you who's coming` +
+               `${at ? ` — you said ${clockShort(at, tz)}` : ''}.`);
+}
+
+/* The occurrence this ride is for, if one of the kid's things ends (or
+   starts) within 45 minutes of the time and is a one-off. */
+async function rideOccurrence(db: any, kidId: string, date: string, at: string | null) {
+  if (!at) return null;
+  const { data: occ } = await db.rpc('occurrences_on', { p_date: date });
+  const t = Date.parse(at);
+  let best: any = null, bestGap = 46 * 60_000;
+  for (const o of occ ?? []) {
+    if (o.all_day) continue;
+    const { data: cast } = await db.rpc('event_cast', { p_event: o.event_id });
+    if (!(cast ?? []).some((c: any) => c.member_id === kidId)) continue;
+    const gap = Math.min(Math.abs(Date.parse(o.ends_at ?? o.starts_at) - t), Math.abs(Date.parse(o.starts_at) - t));
+    if (gap < bestGap) { best = o; bestGap = gap; }
+  }
+  if (!best) return null;
+  const { data: ev } = await db.from('events').select('id, title, repeat_freq').eq('id', best.event_id).maybeSingle();
+  if (!ev || ev.repeat_freq) return null;      // a series: never put a role on every week
+  return ev;
+}
+
+async function claimRide(db: any, pl: any, claimer: any, members: any[], tz: string) {
+  const kid = members.find((m: any) => m.id === pl.kidId);
+  if (!kid) return twiml('That one is already gone.');
+  /* First writer wins. (kind, for_date, member_id) is the primary key. */
+  const { error: dup } = await db.from('nudge_log')
+    .insert({ kind: `ride:${pl.reqId}`, for_date: pl.date, member_id: kid.id });
+  if (dup) {
+    return twiml(`Someone already has ${kid.name}'s ride.`);
+  }
+
+  const lead = claimer.default_lead_minutes ?? 30;
+  let attached = '';
+  if (pl.at) {
+    const ev = await rideOccurrence(db, kid.id, pl.date, pl.at);
+    if (ev) {
+      await db.from('event_people').upsert({
+        household_id: HOUSEHOLD, event_id: ev.id, member_id: claimer.id, role: 'pickup'
+      }, { onConflict: 'event_id,member_id,role' });
+      /* One-off event, so no occurrence_date (reminders_unique_occurrence is
+         partial on it). Replace any unsent alert of theirs rather than add. */
+      await db.from('reminders').delete().eq('event_id', ev.id).eq('member_id', claimer.id).is('sent_at', null);
+      await db.from('reminders').insert({
+        household_id: HOUSEHOLD, event_id: ev.id, member_id: claimer.id, lead_minutes: lead,
+        fire_at: new Date(Date.parse(pl.at) - lead * 60_000).toISOString()
+      });
+      /* Touching the row fires resync_reminders(), which times a pickup off the end. */
+      await db.from('events').update({ updated_at: new Date().toISOString() }).eq('id', ev.id);
+      attached = ` (${ev.title})`;
+    } else {
+      const title = `Pick up ${kid.name}${pl.where ? ` from ${pl.where}` : ''}`;
+      const { data: ev2 } = await db.from('events').insert({
+        household_id: HOUSEHOLD, member_id: kid.id, title, all_day: false,
+        event_date: pl.date, starts_at: pl.at, source: 'sms', created_by: claimer.id
+      }).select('id').single();
+      if (ev2) {
+        await db.from('event_people').upsert([
+          { household_id: HOUSEHOLD, event_id: ev2.id, member_id: kid.id,     role: 'going'  },
+          { household_id: HOUSEHOLD, event_id: ev2.id, member_id: claimer.id, role: 'pickup' }
+        ], { onConflict: 'event_id,member_id,role' });
+        await db.from('reminders').insert({
+          household_id: HOUSEHOLD, event_id: ev2.id, member_id: claimer.id, lead_minutes: lead,
+          fire_at: new Date(Date.parse(pl.at) - lead * 60_000).toISOString()
+        });
+        await remember(db, claimer, ev2.id, pl.date, 'create');
+      }
+    }
+  }
+
+  const when = pl.at ? clockShort(pl.at, tz) : 'as soon as you can';
+  const me = familyName(claimer);
+  /* Tell the kid; tell the other parent(s) and close their copy of the question. */
+  await deliver(db, OUT_ENV, kid, { householdId: HOUSEHOLD, title: 'Ride',
+    body: `${me}'s got you ${pl.at ? `at ${when}` : 'soon'}.`, kind: 'ride', refId: pl.reqId, tag: `ride-${pl.reqId}` });
+  for (const p of parentsOf(members, kid)) {
+    if (p.id === claimer.id) continue;
+    await db.from('sms_pending').upsert({
+      household_id: HOUSEHOLD, member_id: p.id, kind: 'rides',
+      payload: { ...pl, claimedBy: claimer.name }, options: [{ keys: RIDE_CLAIM_KEYS, value: 'claim' }],
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString()
+    }, { onConflict: 'member_id' });
+    await deliver(db, OUT_ENV, p, { householdId: HOUSEHOLD, title: 'Ride',
+      body: `${claimer.name} has it — ${kid.name}${pl.at ? ` at ${when}` : ''}.`, kind: 'ride', refId: pl.reqId, tag: `ride-${pl.reqId}` });
+  }
+  return twiml(`You've got ${kid.name} ${pl.at ? `at ${when}` : 'as soon as you can'}${attached}.` +
+               (pl.at ? ` I'll remind you ${lead} min before.` : ''));
+}
+
+/* "can't" from one parent: fine, the other still has the question. From the
+   last one standing, the kid should not wait twenty minutes to hear it. */
+async function passRide(db: any, pl: any, passer: any, members: any[]) {
+  const kid = members.find((m: any) => m.id === pl.kidId);
+  const { data: still } = await db.from('sms_pending').select('member_id, payload').eq('kind', 'rides');
+  const open = (still ?? []).filter((r: any) => r.payload?.reqId === pl.reqId && r.member_id !== passer.id && !r.payload?.claimedBy);
+  if (kid && !open.length) {
+    const { error: dup } = await db.from('nudge_log')
+      .insert({ kind: `ride:${pl.reqId}`, for_date: pl.date, member_id: kid.id });
+    if (!dup) {
+      const guardian = members.find((m: any) => m.id === kid.notify_via_member_id && m.id !== kid.id);
+      await deliver(db, OUT_ENV, kid, { householdId: HOUSEHOLD, title: 'Ride',
+        body: `Nobody can right now — call ${guardian ? familyName(guardian) : 'a parent'}.`, kind: 'ride', refId: pl.reqId });
+    }
+  }
+  return twiml(`OK${open.length ? ` — ${open.map((r: any) => members.find((m: any) => m.id === r.member_id)?.name ?? '?').join(' and ')} still ha${open.length === 1 ? 's' : 've'} the question` : ''}.`);
+}
+
 Deno.serve(async (req) => {
   const raw  = await req.text();
   const form = new URLSearchParams(raw);
@@ -4030,7 +4484,7 @@ Deno.serve(async (req) => {
     .eq('member_id', sender.id).maybeSingle();
 
   if (pend) {
-    const answer = String(body).trim().toLowerCase();
+    const answer = String(body).trim().toLowerCase().replace(/[\s.!]+$/, '');
     const opts: any[] = pend.options ?? [];
     const hit = opts.find((o: any) =>
       o.keys.some((k: string) => answer === k || answer.startsWith(k + ' ')));
@@ -4043,6 +4497,12 @@ Deno.serve(async (req) => {
         if (hit.value === 'cancel') return twiml('Dropped it.');
         // The day is settled. The clock may still be an open question.
         return await advance(db, pl.parsed, hit.value, members ?? [], sender, tz);
+      }
+
+      if (pend.kind === 'rides' && pl.ask === 'kid_ride') {
+        if (pl.claimedBy) return twiml(`${pl.claimedBy} already has it.`);
+        if (hit.value === 'claim') return await claimRide(db, pl, sender, members ?? [], tz);
+        return await passRide(db, pl, sender, members ?? []);
       }
 
       if (pend.kind === 'rides') {
@@ -4152,8 +4612,13 @@ Deno.serve(async (req) => {
       }
     }
     // Not an answer to what we asked. Drop the question rather than let a
-    // stale conversation swallow a new instruction.
-    await db.from('sms_pending').delete().eq('id', pend.id);
+    // stale conversation swallow a new instruction. A kid's ride question is
+    // the exception: it never blocks anything, and it must outlive "buy milk"
+    // so that a ME five minutes later still counts (and the dispatcher's
+    // twenty-minute nag still finds it).
+    if (!(pend.kind === 'rides' && (pend.payload as any)?.ask === 'kid_ride')) {
+      await db.from('sms_pending').delete().eq('id', pend.id);
+    }
   }
 
   if (/^(help|\?)$/i.test(body)) {
@@ -4173,6 +4638,7 @@ Deno.serve(async (req) => {
       'A whole schedule: paste it, one date per line, with a first line like "Orchestra — Addie, Jess driving"\n' +
       'Not happening: "Bryce is sick", "snow day", "I\'m away Tue-Thu", "no orchestra Friday". Undo: "Bryce is fine"\n' +
       'Dinner: "dinner is leftovers", "we\'re having tacos", "Addie\'s at church, 3 for dinner", "same as last week"\n' +
+      'Kids: "need a ride at 5" asks both parents; the first to reply ME has it\n' +
       'Reply STOP to opt out.\n' +
       `build ${BUILD}`);
   }
@@ -4195,8 +4661,13 @@ Deno.serve(async (req) => {
   const now = nowInTz(tz);
   const shopCtx  = await shopContext(db);
   const routeCtx = { stores: shopCtx.stores, catalog: shopCtx.catalog,
-                     members: names, now, me: sender.name };
+                     members: names, now, me: sender.name, kid: isKidRole(sender) };
   const routed = routeIntent(body, routeCtx);
+
+  /* ---- a kid asking for a ride ------------------------------------------------
+     Only a teen or child gets here (routeCtx.kid); a parent's same words
+     route as they always did. */
+  if (routed.intent === 'ride_request') return await requestRide(db, routed, sender, members ?? [], tz, now);
 
   /* ---- a pasted weekly ad ------------------------------------------------------
      Nobody texts an ad, but a paste that is one must not fall through to the

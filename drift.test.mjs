@@ -72,7 +72,7 @@ const DEND   = '/* ===== end delivery chain';
 
 const deliverSrc = readFileSync('./deliver.ts', 'utf8');
 
-for (const fn of ['./dispatch-reminders.ts', './morning-digest.ts']) {
+for (const fn of ['./dispatch-reminders.ts', './morning-digest.ts', './sms-inbound.ts']) {
   const src = readFileSync(fn, 'utf8');
   const a = src.indexOf(DSTART);
   const b = src.indexOf(DEND);
@@ -108,8 +108,22 @@ for (const fn of ['./dispatch-reminders.ts', './morning-digest.ts']) {
   const a = stamp('./deliver.ts');
   const b = stamp('./dispatch-reminders.ts');
   const c = stamp('./morning-digest.ts');
-  check('delivery build stamps agree', a && a === b && a === c,
-        `deliver.ts:${a} dispatch:${b} digest:${c}`);
+  const d = stamp('./sms-inbound.ts');
+  check('delivery build stamps agree', a && a === b && a === c && a === d,
+        `deliver.ts:${a} dispatch:${b} digest:${c} sms-inbound:${d}`);
+}
+
+/* kitchen.html and kid.html are index.html with the manifest link removed
+   and a title of their own — nothing else. Keep them that way. */
+{
+  const strip = h => h.replace(/<title>[^<]*<\/title>/, '').replace(/content="(Family|Kitchen|My Day)"/, '')
+    .replace(/<link rel="manifest"[^\n]*\n/, '').replace(/<!-- No manifest on purpose[^\n]*\n/, '');
+  const idx = strip(readFileSync('./index.html', 'utf8'));
+  for (const f of ['./kitchen.html', './kid.html']) {
+    const src = readFileSync(f, 'utf8');
+    check(`${f} has no manifest link`, !/rel="manifest"/.test(src));
+    check(`${f} matches index.html otherwise`, strip(src) === idx, 'regenerate from index.html');
+  }
 }
 
 // The role vocabulary must also match what the database will accept.
@@ -147,6 +161,24 @@ check('parser role list matches the database constraint',
   check('no duplicate migrations under supabase/migrations',
         dupMig.length === 0,
         dupMig.length ? `delete: ${dupMig.join(' ')}` : '');
+}
+
+/* ---------------------------------------------------------------------------
+ * recipe-import.ts carries two modules verbatim, for the same reason
+ * sms-inbound.ts carries the parser: Supabase will not take a second file.
+ * Each inlined copy must equal its source with the `export ` keywords gone.
+ * ------------------------------------------------------------------------- */
+for (const mod of ['fetchpolicy.js', 'markup.js']) {
+  const want = readFileSync(`./${mod}`, 'utf8')
+    .replace(/^export (class|function|const|async function) /gm, '$1 ').trim();
+  const fn = readFileSync('./recipe-import.ts', 'utf8');
+  const a = fn.indexOf(`/* @inline ${mod}`);
+  const b = fn.indexOf(`/* @end ${mod} */`);
+  check(`recipe-import carries ${mod}`, a !== -1 && b > a, `the @inline ${mod} block is missing`);
+  if (a === -1 || b <= a) continue;
+  const copied = fn.slice(fn.indexOf('*/', a) + 2, b).trim();
+  check(`${mod} copy is identical`, copied === want,
+        `FIX: re-copy ${mod} into recipe-import.ts, dropping the \`export \` keywords.`);
 }
 
 console.log(fail ? `\n${fail} check(s) failed` : '\nno drift');

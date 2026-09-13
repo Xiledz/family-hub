@@ -1,0 +1,23 @@
+import { choreStreak, streakLine, weekOf } from './streak.js';
+let pass = 0, fail = 0;
+const ok = (n, got, want) => { const g = JSON.stringify(got), w = JSON.stringify(want);
+  if (g === w) pass++; else { fail++; console.log(`FAIL ${n}\n   got  ${g}\n   want ${w}`); } };
+const row = (due_on, missed = false) => ({ due_on, completed_at: due_on + 'T20:00:00Z', missed_at: missed ? due_on + 'T23:59:00Z' : null, repeat_freq: 'weekly' });
+const T = '2026-09-12';                                  // Saturday
+ok('weekOf Sat → Sun', weekOf('2026-09-12'), '2026-09-06');
+ok('weekOf Sun', weekOf('2026-09-06'), '2026-09-06');
+ok('nothing', choreStreak([], T), { weeks: 0, run: 0, lastMissed: false, total: 0, chores: 0 });
+ok('one-off todos do not count', choreStreak([{ due_on: T, completed_at: 'x', missed_at: null, repeat_freq: null }], T).chores, 0);
+ok('three clean weeks', choreStreak([row('2026-09-08'), row('2026-09-01'), row('2026-08-25')], T).weeks, 3);
+ok('run counts chores', choreStreak([row('2026-09-08'), row('2026-09-01'), row('2026-08-25')], T).run, 3);
+ok('a miss last week resets', choreStreak([row('2026-09-08'), row('2026-09-01', true), row('2026-08-25')], T).weeks, 1);
+ok('a miss this week: 0 weeks, lastMissed', (s => [s.weeks, s.lastMissed])(choreStreak([row('2026-09-08', true), row('2026-09-01'), row('2026-08-25')], T)), [0, true]);
+ok('a week with nothing due is neutral', choreStreak([row('2026-09-08'), row('2026-08-25')], T).weeks, 2);
+ok('two chores one week, one missed → that week breaks', choreStreak([row('2026-09-08'), row('2026-09-09', true), row('2026-09-01')], T).weeks, 0);
+ok('daily chores: seven done this week = 1 week', choreStreak([6,7,8,9,10,11,12].map(d => row(`2026-09-${String(d).padStart(2,'0')}`)), T).weeks, 1);
+ok('due_on missing falls back to completed_at', choreStreak([{ completed_at: '2026-09-08T20:00:00Z', missed_at: null, repeat_freq: 'weekly' }], T).weeks, 1);
+ok('line: none', streakLine(choreStreak([], T)), 'No chores done yet — the first tick starts your streak.');
+ok('line: 3 weeks', streakLine(choreStreak([row('2026-09-08'), row('2026-09-01'), row('2026-08-25')], T)), '3 weeks in a row, nothing missed.');
+ok('line: 1 week', streakLine(choreStreak([row('2026-09-08')], T)), 'This week is clean so far — keep it going.');
+ok('line: missed', streakLine(choreStreak([row('2026-09-08', true)], T)), 'Missed one — a clean week starts a new streak.');
+console.log(`\n${pass} passed, ${fail} failed`);

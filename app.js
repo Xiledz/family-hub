@@ -7,6 +7,7 @@ import { parseQuickAdd, describe, parseShopping, parseTodo, parseIngredient, spl
          parseSeason, looksLikeSeason, splitSeasonLines, parseAd, looksLikeAd,
          roleVerb, castLine, toggleCastRole, FORM_WORDS, isFormOnly } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
+import { choreStreak, streakLine } from './streak.js';
 
 const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -27,10 +28,46 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-12f';
+const APP_BUILD = '2026-09-13a';
+
+/* ============================================================================
+ * MODES — the kitchen iPad.
+ *
+ * One shared iOS device, signed in as Jess. Two URLs turn it into something
+ * safer than a normal tab:
+ *   ?kid=bryce        Bryce's own day: his events, his todos (tick / untick,
+ *                     nothing else), tonight's dinner, his streak. Big type,
+ *                     one screen, no tab bar, no add, no Settings.
+ *   ?display=kitchen  the wall: the week for the whole house, read-only,
+ *                     refreshed every five minutes, screen kept awake.
+ *
+ * THE RULES, because the device is shared:
+ *   - identity comes from the URL on EVERY load and is never written to
+ *     localStorage — fh.me stays whatever the last normal tab chose, so Jess
+ *     opening the plain app later is still Jess.
+ *   - neither mode registers push or asks for notification permission. A
+ *     push_subscriptions row from that iPad would land under whoever the
+ *     browser last identified as, and reminders would go to the wrong person.
+ *   - the passcode is still the household gate: it is asked once on that
+ *     device (fh.code) and never travels in the URL.
+ * ==========================================================================*/
+const MODE = (() => {
+  try {
+    const u = new URL(location.href);
+    const file = u.pathname.split('/').pop().toLowerCase();
+    const k = (u.searchParams.get('kid') || '').trim();
+    /* kitchen.html / kid.html carry NO manifest link: iOS replaces a
+       home-screen bookmark's URL with the manifest's start_url, which would
+       silently turn the wall back into Jess's normal app. A file name
+       survives Add to Home Screen; a query string on index.html does not. */
+    if (file === 'kitchen.html' || (u.searchParams.get('display') || '').toLowerCase() === 'kitchen') return { kind: 'display' };
+    if (file === 'kid.html' || k) return { kind: 'kid', who: k || null };
+  } catch {}
+  return null;
+})();
 
 const state = {
-  db: null, demo: isDemo(),
+  db: null, demo: isDemo(), mode: MODE?.kind || null,
   household: null, members: [], events: [], exceptions: [], me: null,
   module: 'calendar', view: 'today', cursor: null,   // cursor = the date each view is centred on
   editing: null, editingOccurrence: null, parsed: null, pendingScope: null,
@@ -397,8 +434,12 @@ async function boot(){
   const saved = localStorage.getItem('fh.code');
   const savedMe = localStorage.getItem('fh.me');
   if (saved && saved === state.household.passcode) {
+    if (MODE) return enterMode();
     if (savedMe && memberOf(savedMe)) { state.me = memberOf(savedMe); return enter(); }
     showWho();
+  } else if (MODE) {
+    $('#gate-p').textContent = MODE.kind === 'kid' ? 'Enter the family code once to set up this screen'
+                                                   : 'Enter the family code once to set up the kitchen display';
   }
 }
 
@@ -409,6 +450,7 @@ $('#code-go').onclick = () => {
     $('#code-err').textContent = "That code doesn't match."; return;
   }
   localStorage.setItem('fh.code', state.household.passcode);
+  if (MODE) return enterMode();
   showWho();
 };
 $('#code').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#code-go').click(); } });
@@ -491,6 +533,8 @@ function absenceChips(day){
  * RENDER
  * ========================================================================*/
 function render(){
+  if (state.mode === 'kid')     return KID.render();
+  if (state.mode === 'display') return WALL.render();
   const now = new Date();
   const hr = now.getHours();
   $('#hello').firstChild.textContent = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
@@ -1612,7 +1656,15 @@ const MEAL = {
       body: JSON.stringify(body)
     });
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j.message || j.error || `import failed (${res.status})`);
+    if (!res.ok) {
+      /* The function tells us WHY in a field, so the sheet can offer the
+         right next step instead of making him read a status code. */
+      const err = new Error(j.message || j.error || `import failed (${res.status})`);
+      err.reason = j.reason || 'unreadable';
+      err.retryAfter = j.retry_after_seconds ?? null;
+      err.host = j.host || null;
+      throw err;
+    }
     return j;
   },
 
@@ -1946,12 +1998,20 @@ async function startImport(input){
   const isUrl = /^https?:\/\/\S+$/i.test(input);
   if (isUrl) {
     toast('Reading the recipe…');
+    /* Some recipe sites take fifteen seconds. Silence for that long reads as
+       a hang, so say so once rather than letting him wonder. */
+    const slow = setTimeout(() => toast('Still reading — some recipe sites are slow'), 6000);
     try {
       const d = await MEAL.fetchDraft(input);
+      clearTimeout(slow);
       openConfirmSheet(MEAL.draftToRecipe(d), d.method);
     } catch (err) {
+      clearTimeout(slow);
       openConfirmSheet({ name: '', servings: null, cook_minutes: 30, instructions: [], ingredients: [],
-                         steps: [], source_url: input, source: 'manual' }, 'none', String(err.message || err));
+                         steps: [], source_url: input, source: 'manual' }, 'none',
+                       String(err.message || err),
+                       null,
+                       { reason: err.reason, retryAfter: err.retryAfter, url: input });
     }
   } else {
     openConfirmSheet({ name: input, servings: null, cook_minutes: 30, instructions: [],
@@ -1960,14 +2020,19 @@ async function startImport(input){
 }
 
 /* The confirm screen. Nothing is saved until Save is tapped. */
-function openConfirmSheet(rec, method, errMsg = null, existingId = null){
+function openConfirmSheet(rec, method, errMsg = null, existingId = null, failure = null){
   const ingText = rec.ingredients.map(i => i.original || i.name).join('\n');
   const insText = (rec.instructions || []).join('\n');
   const stepRows = (rec.steps || []).map(s => `${s.label} | ${s.minutes_before_cook}`).join('\n');
   const how = { jsonld: 'Read from the page', microdata: 'Read from the page', heading: 'Read from the page (best guess)',
                 paste: 'From your paste', manual: '', none: "Couldn't read the ingredients from this page — paste them below." }[method] || '';
+  /* A rate limit is the one failure that fixes itself. Give it a button and
+     a countdown instead of asking him to retype the link. */
+  const canRetry = failure && (failure.reason === 'rate_limited' || failure.reason === 'timeout' || failure.reason === 'server_error');
+  const waitFor  = failure?.retryAfter && failure.retryAfter <= 300 ? failure.retryAfter : (failure?.reason === 'rate_limited' ? 60 : 0);
   const html = `
     ${errMsg ? `<p class="warn">${esc(errMsg)}</p>` : ''}
+    ${canRetry ? `<p class="actions"><button type="button" id="c-retry" class="primary">Try again${waitFor ? ` <span id="c-wait">(${waitFor}s)</span>` : ''}</button></p>` : ''}
     ${how ? `<p class="hint">${esc(how)}</p>` : ''}
     <div class="f"><label>Name</label><input id="c-name" value="${esc(rec.name || '')}"></div>
     <div class="frow">
@@ -1993,6 +2058,25 @@ function openConfirmSheet(rec, method, errMsg = null, existingId = null){
       <button type="button" id="c-save" class="primary">Save recipe</button>
     </div>`;
   openMSheet(existingId ? 'Edit recipe' : 'New recipe', html, body => {
+    /* Try again: count the wait down on the button, then run the same import.
+       The paste box below stays filled in either way — that path never fails. */
+    const retry = body.querySelector('#c-retry');
+    if (retry) {
+      let left = waitFor;
+      const label = body.querySelector('#c-wait');
+      retry.disabled = left > 0;
+      const tick = left > 0 ? setInterval(() => {
+        left -= 1;
+        if (label) label.textContent = left > 0 ? `(${left}s)` : '';
+        if (left <= 0) { clearInterval(tick); retry.disabled = false; }
+      }, 1000) : null;
+      retry.onclick = () => {
+        if (retry.disabled) return;
+        if (tick) clearInterval(tick);
+        closeMSheet();
+        startImport(failure.url);
+      };
+    }
     body.querySelector('#c-save').onclick = async () => {
       const lines = splitIngredientBlock(body.querySelector('#c-ing').value);
       const ings  = lines.map((l, i) => { const p = parseIngredient(l, { catalog: state.shopCatalog });
@@ -2791,10 +2875,12 @@ const standalone = () => window.matchMedia('(display-mode: standalone)').matches
                       || window.navigator.standalone === true;
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent);
 
+async function registerSW(){
+  if (!('serviceWorker' in navigator)) return;
+  try { await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn('SW failed', e); }
+}
 async function initPush(){
-  if ('serviceWorker' in navigator) {
-    try { await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn('SW failed', e); }
-  }
+  await registerSW();
   if (state.demo) return;                       // don't stack banners over the demo notice
   const b = $('#banner');
   if (isIOS() && !standalone()) {
@@ -2921,9 +3007,203 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.module === 'meals' && !state.demo) {
     MEAL.load().then(render);
   }
+  if (document.visibilityState === 'visible' && state.mode === 'kid' && !state.demo) KID.refresh();
+  if (document.visibilityState === 'visible' && state.mode === 'display' && !state.demo) WALL.refresh();
   if (!document.hidden) checkRollover();
 });
 window.addEventListener('focus', checkRollover);
 setInterval(checkRollover, 60_000);
+
+/* ==========================================================================
+ * KID MODE + KITCHEN DISPLAY  (see MODE, top of file)
+ * ======================================================================== */
+async function enterMode(){
+  $('#gate').classList.add('hide');
+  document.body.classList.add('mode-' + MODE.kind);
+  await registerSW();                          // offline shell only — never push
+  if (MODE.kind === 'kid') {
+    const key = String(MODE.who || '').toLowerCase();
+    const m = key && (state.members.find(x => x.id === MODE.who) ||
+              state.members.find(x => x.name.toLowerCase() === key) ||
+              state.members.find(x => (x.aliases || []).some(a => String(a).toLowerCase() === key)));
+    if (!m) {
+      /* No name in the URL (kid.html on its own), or one nobody answers to:
+         ask, this once, and remember nothing — the next load asks again. */
+      $('#gate').classList.remove('hide');
+      $('#step-code').classList.add('hide');
+      $('#step-who').classList.remove('hide');
+      $('#gate-p').innerHTML = key ? `Nobody here is called <b>${esc(MODE.who)}</b>. Whose screen is this?` : 'Whose screen is this?';
+      const kids = state.members.filter(x => ['teen', 'child'].includes(x.role));
+      $('#whogrid').innerHTML = (kids.length ? kids : state.members).map(x =>
+        `<button class="whobtn" data-id="${x.id}"><span class="dot" style="background:${x.color}"></span>${esc(x.name)}</button>`).join('');
+      $$('#whogrid .whobtn').forEach(b => b.onclick = () => { MODE.who = b.dataset.id; enterMode(); });
+      return;
+    }
+    $('#gate').classList.add('hide');
+    state.me = m;                              // for completed_by; never saved
+    state.module = 'kid';
+    $('#kid').classList.remove('hide');
+    await KID.refresh();
+    if (!state.demo) {
+      state.db.channel('kid-todos')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'todos' }, () => KID.refresh())
+        .subscribe();
+    }
+    setInterval(() => KID.refresh(), 5 * 60_000);
+    return;
+  }
+  state.me = null;
+  state.module = 'display';
+  $('#wall').classList.remove('hide');
+  await WALL.refresh();
+  setInterval(() => WALL.refresh(), 5 * 60_000);
+  WALL.keepAwake();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) WALL.keepAwake(); });
+}
+
+const KID = {
+  _loading: false,
+  async refresh(){
+    if (KID._loading) return;
+    KID._loading = true;
+    try {
+      if (!state.demo) {
+        await Promise.all([DB.loadEvents(), TODO.load(), EV.loadDone(), KID.loadHistory()]);
+      }
+    } catch (e) { console.warn('kid refresh failed', e); }
+    KID._loading = false;
+    render();
+  },
+  /* Closed chores of this kid for the last 26 weeks, cleared ones included —
+     "Clear done" tidies the list, it does not erase what happened. */
+  async loadHistory(){
+    const since = addDaysS(ymd(new Date()), -26 * 7);
+    const { data } = await state.db.from('todos')
+      .select('due_on, completed_at, missed_at, repeat_freq')
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('assignee_id', state.me.id)
+      .is('deleted_at', null).not('completed_at', 'is', null).not('repeat_freq', 'is', null)
+      .gte('completed_at', since + 'T00:00:00Z').limit(500);
+    state.kidHistory = data || [];
+  },
+  /* His events: on the cast in any role, or nobody named (a household day). */
+  mine(list){
+    return list.filter(e => {
+      const cast = e.people || [];
+      if (cast.length) return cast.some(c => c.member_id === state.me.id);
+      return !e.member_id || e.member_id === state.me.id;
+    });
+  },
+  render(){
+    const now = new Date(), today = ymd(now);
+    const m = state.me;
+    const evs = KID.mine(onDay(today));
+    const open = (state.todos || []).filter(t => t.assignee_id === m.id && !t.completed_at);
+    const doneToday = (state.todos || []).filter(t => t.assignee_id === m.id && t.completed_at && !t.missed_at &&
+      String(t.completed_at).slice(0, 10) === today);
+    const streak = choreStreak(state.kidHistory || [], today);
+    const meal = state.todayMeal;
+    const dish = meal ? (meal.recipes?.name || meal.freeform || 'Dinner') : null;
+    const cookId = meal ? (meal.cook_id || state.household?.default_cook_id || meal.created_by || null) : null;
+    const cook = cookId ? memberOf(cookId) : null;
+    const hr = now.getHours();
+    const hello = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+
+    $('#kid').innerHTML = `
+      <header class="khdr">
+        <span class="dot" style="background:${m.color}"></span>
+        <div><div class="kh1">${hello}, ${esc(m.name)}</div>
+        <div class="kh2">${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</div></div>
+      </header>
+
+      <section class="kcard">
+        <div class="kh3">Today</div>
+        ${evs.length ? evs.map(e => `
+          <div class="krow" style="--c:${colorOf(e.member_id)}">
+            <span class="ktime">${timeOf(e)}</span>
+            <span class="kbody"><span class="kt">${esc(e.title)}</span>${(e.people || []).some(c => ['driving','dropoff','pickup'].includes(c.role))
+              ? `<span class="kw">${esc(whoOf(e, true))}</span>` : ''}</span>
+          </div>`).join('')
+        : `<div class="kempty">Nothing on your calendar today.</div>`}
+      </section>
+
+      <section class="kcard">
+        <div class="kh3">My jobs ${open.length ? `<b>${open.length} left</b>` : `<b>all done</b>`}</div>
+        ${[...open, ...doneToday].map(t => `
+          <button type="button" class="kjob${t.completed_at ? ' done' : ''}" data-kjob="${t.id}" aria-pressed="${!!t.completed_at}">
+            <span class="kbox">${t.completed_at ? '✓' : ''}</span>
+            <span class="kjt">${esc(t.title)}${t.due_on && t.due_on < today && !t.completed_at ? `<i>overdue</i>` : ''}</span>
+          </button>`).join('')}
+        ${!open.length && !doneToday.length ? `<div class="kempty">Nothing on your list. Nice.</div>` : ''}
+        <div class="kstreak">${esc(streakLine(streak))}${streak.run >= 2 ? ` <span>${streak.run} chores in a row.</span>` : ''}</div>
+      </section>
+
+      <section class="kcard kdinner">
+        <div class="kh3">Dinner</div>
+        ${dish ? `<div class="kd">${esc(dish)}</div><div class="kd2">${cook ? `${esc(cook.name)} is cooking` : ''}${meal.ready_by ? `${cook ? ' · ' : ''}ready by ${clock12(meal.ready_by)}` : ''}</div>`
+               : `<div class="kempty">Nothing planned yet.</div>`}
+      </section>
+      <div class="kver">v${APP_BUILD}</div>`;
+    $$('[data-kjob]').forEach(b => b.onclick = () => TODO.toggle(b.dataset.kjob));
+  }
+};
+
+const WALL = {
+  _loading: false, _lock: null,
+  async refresh(){
+    if (WALL._loading) return;                 // never two loads at once
+    WALL._loading = true;
+    try {
+      if (!state.demo) {
+        await DB.loadEvents();
+        const { count } = await state.db.from('shopping_items')
+          .select('id', { count: 'exact', head: true })
+          .eq('household_id', CONFIG.HOUSEHOLD_ID).is('cleared_at', null).eq('got', false);
+        state.wallShop = count ?? 0;
+      }
+    } catch (e) { console.warn('wall refresh failed', e); }
+    WALL._loading = false;
+    render();
+  },
+  /* Wake Lock where it exists (Safari 16.4+); silently nothing elsewhere.
+     Re-requested when the tab comes back, because the browser drops it. */
+  async keepAwake(){
+    try {
+      if (!('wakeLock' in navigator)) return;
+      if (WALL._lock && !WALL._lock.released) return;
+      WALL._lock = await navigator.wakeLock.request('screen');
+    } catch {}
+  },
+  render(){
+    const now = new Date(), today = ymd(now);
+    const days = [...Array(7)].map((_, i) => addDaysS(today, i));
+    const meal = state.todayMeal;
+    const dish = meal ? (meal.recipes?.name || meal.freeform || 'Dinner') : null;
+    const cookId = meal ? (meal.cook_id || state.household?.default_cook_id || meal.created_by || null) : null;
+    const cook = cookId ? memberOf(cookId) : null;
+    $('#wall').innerHTML = `
+      <header class="whdr">
+        <div><div class="wh1">${now.toLocaleDateString('en-US', { weekday: 'long' })}</div>
+        <div class="wh2">${now.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}</div></div>
+        <div class="wside">
+          <div class="wdin"><span class="wlab">Dinner</span>${dish
+            ? `<b>${esc(dish)}</b><span>${cook ? `${esc(cook.name)} cooks` : ''}${meal.ready_by ? `${cook ? ' · ' : ''}by ${clock12(meal.ready_by)}` : ''}</span>`
+            : `<b>Not planned</b>`}</div>
+          <div class="wshop"><span class="wlab">Shopping</span><b>${state.wallShop ?? 0}</b><span>to buy</span></div>
+        </div>
+      </header>
+      <div class="wgrid">
+        ${days.map(d => { const dd = parseYmd(d); const evs = onDay(d);
+          return `<section class="wday${d === today ? ' on' : ''}">
+            <div class="wdh"><i>${DOW_FULL[dd.getDay()]}</i><b>${dd.getDate()}</b>${absenceChips(d)}</div>
+            ${evs.length ? evs.map(e => `
+              <div class="wev" style="--c:${colorOf(e.member_id)}">
+                <span class="wt">${timeOf(e)}</span>
+                <span class="wb"><span class="wn">${esc(e.title)}</span><span class="ww">${esc(whoOf(e, true))}</span></span>
+              </div>`).join('') : `<div class="wempty">—</div>`}
+          </section>`; }).join('')}
+      </div>
+      <div class="wfoot">Updated ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} · v${APP_BUILD}</div>`;
+  }
+};
 
 boot();

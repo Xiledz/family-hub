@@ -1589,6 +1589,10 @@ export function routeIntent(body, opts = {}, from = 0) {
   const next   = () => routeIntent(text, opts, from + 1);
 
   /* 0 */ if (from <= 0) {
+    /* A kid asking for a ride (§21). Only when the handler says the sender
+       is a kid; an adult's identical words never come here. */
+    const ride = rideRequestIntent(text, opts);
+    if (ride) return ride;
     if (ROUTE_RE.LIST_CMD.test(text))  return { intent: 'show', store: null };
     /* "my list" / "todos" / "chores". Bare "list" stays shopping above,
        because the family already learned it that way. */
@@ -2670,4 +2674,58 @@ export function splitIngredientBlock(text) {
   return String(text || '').split(/\r?\n/)
     .map(l => l.trim())
     .filter(l => l && !/^(?:for the\b|.*:\s*$)/i.test(l) && !/^ingredients\b/i.test(l));
+}
+
+/* ===========================================================================
+ * 21. A KID ASKING FOR A RIDE
+ *
+ * "can someone pick me up at 5" / "I need a ride home from practice" /
+ * "need a ride at 5:30". Only a teen or child sends this; the handler
+ * passes opts.kid for them and NOTHING else, so an adult typing the same
+ * words routes exactly as before (an adult asking "can someone pick me up"
+ * is a calendar note, not a request the family number can broker).
+ *
+ * The clock has no am/pm nearly every time. A ride is asked for after
+ * school, so a bare 1–8 is PM, 9–11 is AM, 12 is noon. "now" and
+ * "in 20 min" are honoured; no clock at all means "as soon as someone can".
+ * Where they are ("from practice", "at school") is kept as a word for the
+ * parents' text; "home" is the destination, never the place.
+ * ==========================================================================*/
+const RIDE_REQ = {
+  ASK: /^(?:hey\s+|hi\s+|um\s+)?(?:(?:can|could|will|would|is\s+anyone\s+able\s+to)\s+(?:someone|somebody|anyone|anybody|you|u|mom|dad|mum|mama|papa|\w+)\s+(?:please\s+)?(?:come\s+(?:and\s+)?)?(?:pick\s+me\s+up|get\s+me|grab\s+me|come\s+get\s+me)|(?:i\s+)?(?:need|needs|want)\s+(?:a\s+)?(?:ride|lift|pick\s*up|pickup)|(?:can|could)\s+i\s+get\s+a\s+(?:ride|lift)|(?:pick\s+me\s+up|come\s+get\s+me|come\s+pick\s+me\s+up)|(?:ride|pickup|pick\s*up)\s+(?:please|pls|plz))\b/i,
+  CLOCK: /\b(?:at|by|around|about|@)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.|a|p)?\b|\b(\d{1,2}):(\d{2})\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b/i,
+  IN:    /\bin\s+(?:about\s+|like\s+)?(\d{1,3})\s*(min(?:ute)?s?|hours?|hrs?)\b|\bin\s+(?:an?|one)\s+hour\b|\bin\s+half\s+an\s+hour\b/i,
+  NOW:   /\b(?:right\s+)?now\b|\basap\b|\bas\s+soon\s+as\b/i,
+  WHERE: /\b(?:from|at|outside|in\s+front\s+of)\s+(?:the\s+)?([a-z][a-z' ]*?)(?=\s+(?:at|by|around|about|@|in)\s+\d|\s*[,.!?]|\s+(?:please|pls|plz|now|asap|today|tonight)\b|\s*$)/i,
+  NOT_PLACE: /^(?:home|house|me|it|\d+|(?:\d+\s*)?(?:am|pm))$/i
+};
+export function rideRequestIntent(body, opts = {}) {
+  if (!opts.kid) return null;
+  const text = String(body || '').trim().replace(/\s+/g, ' ');
+  if (!RIDE_REQ.ASK.test(text)) return null;
+  let time = null, inMin = null, m;
+  if ((m = text.match(RIDE_REQ.CLOCK))) {
+    let h = +(m[1] ?? m[4] ?? m[7]), mi = +(m[2] ?? m[5] ?? 0);
+    const ap = (m[3] ?? m[6] ?? m[8] ?? '').toLowerCase().replace(/\./g, '');
+    if (h >= 1 && h <= 12 && mi < 60) {
+      if (ap.startsWith('p'))      { if (h !== 12) h += 12; }
+      else if (ap.startsWith('a')) { if (h === 12) h = 0; }
+      else if (h <= 8)             { h += 12; }               // 5 → 5 PM; 12 → noon stays
+      else if (h < 12) {                                       // 9–11: AM unless it has passed
+        const nh = (opts.now || new Date()).getHours();
+        if (nh >= h) h += 12;
+      }
+      time = `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+    }
+  } else if ((m = text.match(RIDE_REQ.IN))) {
+    if (/half/.test(m[0])) inMin = 30;
+    else if (!m[1]) inMin = 60;
+    else inMin = /h/i.test(m[2]) ? +m[1] * 60 : +m[1];
+  } else if (RIDE_REQ.NOW.test(text)) {
+    inMin = 0;
+  }
+  let where = null;
+  const w = text.replace(RIDE_REQ.CLOCK, ' ').match(RIDE_REQ.WHERE);
+  if (w && !RIDE_REQ.NOT_PLACE.test(w[1].trim())) where = w[1].trim().toLowerCase();
+  return { intent: 'ride_request', time, inMin, where };
 }

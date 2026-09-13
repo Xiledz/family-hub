@@ -12,7 +12,7 @@
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-const BUILD = '2026-09-12a-m1';
+const BUILD = '2026-09-12g-m1';
 
 const admin = () => createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -334,13 +334,54 @@ Deno.serve(async (req) => {
     results.push({ who: r.members?.name, title, channel: res.channel, ok: res.ok });
   }
 
+  /* A kid's ride request nobody answered (sms-inbound requestRide). The
+     question sits in sms_pending for each parent; twenty minutes on, the
+     kid is told to stop waiting. nudge_log 'ride:<id>' is the one record of
+     "settled" — a parent claiming it wrote that row first, so the insert
+     fails and this stays silent. The rows are closed either way. */
+  const rideNags = await nagUnansweredRides(db, now);
+
   console.log(`dispatch build=${BUILD} deliver=${DELIVER_BUILD} ` +
               `checked=${due?.length ?? 0} sent=${sent} failed=${failed} ` +
               `expired=${stale?.length ?? 0}`);
 
   return json({ build: BUILD, checked: due?.length ?? 0, sent, failed,
-                expired: stale?.length ?? 0, results });
+                expired: stale?.length ?? 0, rideNags, results });
 });
+
+const RIDE_WAIT_MIN = 20;
+async function nagUnansweredRides(db: any, now: Date): Promise<number> {
+  const { data: rows } = await db.from('sms_pending')
+    .select('id, member_id, payload').eq('kind', 'rides');
+  const stale = (rows ?? []).filter((r: any) => r.payload?.ask === 'kid_ride' && r.payload?.askedAt &&
+    now.getTime() - Date.parse(r.payload.askedAt) >= RIDE_WAIT_MIN * 60_000);
+  if (!stale.length) return 0;
+  let n = 0;
+  const byReq = new Map<string, any[]>();
+  for (const r of stale) { const k = r.payload.reqId; if (!byReq.has(k)) byReq.set(k, []); byReq.get(k)!.push(r); }
+  for (const [reqId, group] of byReq) {
+    const pl = group[0].payload;
+    await db.from('sms_pending').delete().in('id', group.map((r: any) => r.id));
+    if (group.some((r: any) => r.payload?.claimedBy)) continue;
+    const { error: dup } = await db.from('nudge_log')
+      .insert({ kind: `ride:${reqId}`, for_date: pl.date, member_id: pl.kidId });
+    if (dup) continue;                                    // claimed in the meantime
+    const { data: kid } = await db.from('members').select('id, name, phone, notify_via_member_id, household_id')
+      .eq('id', pl.kidId).maybeSingle();
+    if (!kid) continue;
+    const { data: g } = kid.notify_via_member_id
+      ? await db.from('members').select('id, name, aliases').eq('id', kid.notify_via_member_id).maybeSingle()
+      : { data: null };
+    const al = (g?.aliases ?? []).map((a: string) => a.toLowerCase());
+    const who = !g || g.id === kid.id ? 'a parent'
+              : al.includes('mom') || al.includes('mama') || al.includes('mum') ? 'Mom'
+              : al.includes('dad') || al.includes('papa') ? 'Dad' : g.name;
+    const res = await deliver(db, ENV, kid, { householdId: kid.household_id, title: 'Ride',
+      body: `Nobody has answered yet — call ${who}.`, kind: 'ride', refId: reqId, tag: `ride-${reqId}` });
+    if (res.ok) n++;
+  }
+  return n;
+}
 
 /* --- phrasing -------------------------------------------------------------*/
 function phrase(lead: number, ev: any, tz = 'America/Chicago') {

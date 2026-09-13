@@ -1,7 +1,7 @@
 /* Family Hub service worker.
    Two jobs: keep the app shell available offline, and receive push. */
-const CACHE = 'familyhub-v14';
-const SHELL = ['./','./index.html','./styles.css','./app.js','./parse.js','./recur.js','./config.js','./manifest.webmanifest'];
+const CACHE = 'familyhub-v16';
+const SHELL = ['./','./index.html','./kitchen.html','./kid.html','./styles.css','./app.js','./parse.js','./recur.js','./streak.js','./config.js','./manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -33,16 +33,22 @@ self.addEventListener('fetch', e => {
      the app right after a push stayed on the previous build. With it the
      browser revalidates against the server (ETag), which is one tiny
      conditional request per file and returns 304 when nothing changed. */
+  /* The shell is keyed WITHOUT its query string. ?kid=bryce and
+     ?display=kitchen are the same index.html — the mode is read from the
+     URL by app.js at run time, never baked into a cached page — so one
+     cached copy serves every mode, and an offline kitchen iPad still gets
+     the shell instead of a miss. */
+  const key = url.search ? url.origin + url.pathname : e.request;
   e.respondWith(
     fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         if (res && res.ok) {
           const copy = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, copy));
+          caches.open(CACHE).then(c => c.put(key, copy));
         }
         return res;
       })
-      .catch(() => caches.match(e.request).then(hit => hit || caches.match('./index.html')))
+      .catch(() => caches.match(key, { ignoreSearch: true }).then(hit => hit || caches.match('./index.html')))
   );
 });
 
