@@ -20,7 +20,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
 
-const BUILD = '2026-09-12e-m2';
+const BUILD = '2026-09-14b-m2';
 
 const db = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -340,16 +340,20 @@ async function sundayNudge(house: any, tz: string, now: any, opts: any) {
 
   const ahead = weekAhead(now.date);
   const back  = ahead.map((d: string) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - 7); return x.toISOString().slice(0, 10); });
+  /* Planned = on a night in the week ahead OR in that week's tray with no
+     night yet (029): a meal for the week counts as planned. */
+  const ws = (d: string) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - x.getUTCDay()); return x.toISOString().slice(0, 10); };
   const { data: planned } = await db.from('meal_plan').select('plan_date')
     .eq('household_id', house.id).eq('slot', 'dinner').is('deleted_at', null)
-    .gte('plan_date', ahead[0]).lte('plan_date', ahead[6]);
+    .or(`and(plan_date.gte.${ahead[0]},plan_date.lte.${ahead[6]}),and(plan_date.is.null,week_start.eq.${ws(ahead[0])})`);
   if ((planned?.length ?? 0) >= 4) return Response.json({ build: BUILD, mode: 'sunday', skipped: 'week already planned', planned: planned!.length });
 
   const { data: last } = await db.from('meal_plan').select('plan_date, freeform, recipes(name)')
     .eq('household_id', house.id).eq('slot', 'dinner').is('deleted_at', null)
-    .gte('plan_date', back[0]).lte('plan_date', back[6]).order('plan_date');
+    .or(`and(plan_date.gte.${back[0]},plan_date.lte.${back[6]}),and(plan_date.is.null,week_start.eq.${ws(back[0])})`)
+    .order('plan_date', { nullsFirst: false });
   const lastLine = (last ?? []).map((m: any) =>
-    `${DOW3[new Date(m.plan_date + 'T12:00:00Z').getUTCDay()]} ${m.recipes?.name || m.freeform || 'Dinner'}`).join(' · ');
+    `${m.plan_date ? DOW3[new Date(m.plan_date + 'T12:00:00Z').getUTCDay()] : '(no day)'} ${m.recipes?.name || m.freeform || 'Dinner'}`).join(' · ');
 
   const { data: cook } = await db.from('members').select('id, name, phone, notify_via_member_id')
     .eq('id', cookId).maybeSingle();

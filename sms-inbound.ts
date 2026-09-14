@@ -675,23 +675,27 @@ const CATEGORY_WORDS = [
      Ranch is a dressing packet, on the condiments aisle, and is claimed
      first so "ranch seasoning mix" does not become a spice. */
   [/\branch(?:\s+(?:seasoning|dressing|dip)(?:\s+mix)?)?\b/i, 'condiments'],
-  [/\b(?:paprika|cumin|oregano|thyme|rosemary|sage|dill\s*weed|cinnamon|nutmeg|cayenne|turmeric|allspice|cardamom|coriander|cloves?\b(?!\s+(?:of\s+)?garlic)|bay\s*lea(?:f|ves)|chili\s*powder|curry\s*powder|garlic\s*powder|onion\s*powder|garlic\s*salt|onion\s*salt|black\s*pepper|white\s*pepper|peppercorns?|(?:red\s*|crushed\s*)?pepper\s*flakes|(?:italian|taco|cajun|creole|poultry|steak|lemon\s*pepper)\s*seasoning|dried\s+\w+|ground\s+(?:cinnamon|cumin|ginger|cloves|nutmeg|pepper|coriander|mustard|allspice)|\w+\s+extract|kosher\s*salt|sea\s*salt|table\s*salt|\bsalt\b|seasoning|spices?)\b/i, 'baking'],
-  [/\b(?:apple|banana|orange|lemon|lime|grape|berry|berries|strawberr|blueberr|melon|avocado|tomato|potato|onion|garlic|lettuce|spinach|kale|carrot|celery|pepper|cucumber|broccoli|cauliflower|zucchini|squash|mushroom|cilantro|parsley|basil|salad|produce|fruit|veg)/i, 'produce'],
-  [/\b(?:hot\s*dog\s*buns?|hamburger\s*buns?|bread|bagel|bun|roll|tortilla|pita|croissant|muffin|donut|cake|pie|bakery)/i, 'bakery'],
+  [/\b(?:paprika|cumin|oregano|thyme|rosemary|sage|dill\s*weed|cinnamon|nutmeg|cayenne|turmeric|allspice|cardamom|coriander|cloves?\b(?!\s+(?:of\s+)?garlic)|bay\s*lea(?:f|ves)|chili\s*powder|curry\s*powder|garlic\s*powder|onion\s*powder|garlic\s*salt|onion\s*salt|black\s*pepper|white\s*pepper|peppercorns?|(?:red\s*|crushed\s*)?pepper\s*flakes|(?:italian|taco|cajun|creole|poultry|steak)\s*seasoning|lemon\s*pepper(?:\s*seasoning)?|celery\s*salt|dried\s+\w+|ground\s+(?:cinnamon|cumin|ginger|cloves|nutmeg|pepper|coriander|mustard|allspice)|\w+\s+extract|kosher\s*salt|sea\s*salt|table\s*salt|\bsalt\b|seasoning|spices?)\b/i, 'baking'],
+  /* Every fruit and vegetable stops at a WORD END. Without it "lemonade"
+     was a lemon, "butterscotch" was butter, "pineapple" an apple. Plurals
+     are spelled out per word (tomatoes, berries, mangoes), never a bare
+     \b after the stem — that is the trap that would lose "lemons". */
+  [/\b(?:apples?|bananas?|oranges?|lemons?|limes?|grapes?|berr(?:y|ies)|strawberr(?:y|ies)|blueberr(?:y|ies)|raspberr(?:y|ies)|blackberr(?:y|ies)|cherr(?:y|ies)|peach(?:es)?|pears?|plums?|mango(?:e?s)?|pineapples?|watermelons?|cantaloupes?|melons?|kiwis?|avocados?|tomato(?:es)?|potato(?:es)?|onions?|garlic|ginger|jalapen[oñ]s?|lettuce|spinach|kale|carrots?|celery|peppers?|cucumbers?|broccoli|cauliflower|zucchinis?|squash|mushrooms?|cilantro|parsley|basil|green\s+beans|corn\s+on\s+the\s+cob|salad|produce|fruits?|veg(?:gies|etables?)?)\b/i, 'produce'],
+  [/\b(?:hot\s*dog\s*buns?|hamburger\s*buns?|cinnamon\s*rolls?|dinner\s*rolls?|crescent\s*rolls?|kaiser\s*rolls?|bread|bagel|bun|roll|tortilla|pita|croissant|muffin|donut|cake|pie|bakery)/i, 'bakery'],
   [/\b(?:deli|lunch\s*meat|sandwich\s*meat|turkey\s*slices|salami|prosciutto|rotisserie)/i, 'deli'],
   [/\b(?:beef|steak|ground\s*(?:beef|turkey|chuck)|chicken|thigh|drumstick|pork|bacon|sausage|ham|brisket|ribs|meat|hot\s*dog)/i, 'meat'],
   [/\b(?:fish|salmon|tilapia|shrimp|crab|lobster|tuna\s*steak|seafood|cod)/i, 'seafood'],
   [/\b(?:milk|cheese|yogurt|butter|cream|sour\s*cream|cottage|half\s*and\s*half|creamer)/i, 'dairy'],
   [/\b(?:egg|eggs)\b/i, 'eggs'],
-  [/\b(?:frozen|ice\s*cream|popsicle|freezer|waffles?)\b/i, 'frozen'],
+  [/\b(?:frozen|ice\s*cream|popsicles?|freezer|waffles?|onion\s*rings?|french\s*fries|fries|tater\s*tots|pizza\s*rolls|egg\s*rolls?|pizzas?)\b/i, 'frozen'],
   [/\b(?:cereal|oatmeal|oats|granola|pancake|syrup|pop\s*tart)/i, 'breakfast'],
   [/\b(?:cream\s+of\s+\w+\s+soup|\w+\s+noodle\s+soup|chicken\s+soup|chicken\s*broth|beef\s*broth|chicken\s*stock|beef\s*stock|canned|can\s+of|soup|beans|corn|tomato\s*sauce|tomato\s*paste|broth|stock)/i, 'canned'],
   [/\b(?:bread\s*crumbs|rice|pasta|noodle|spaghetti|flour|sugar|salt|cereal\s*bar|cracker|peanut\s*butter|jelly|jam|honey|olive\s*oil|oil|vinegar)/i, 'pantry'],
-  [/\b(?:cream\s+of\s+tartar|baking|yeast|baking\s*(?:soda|powder)|vanilla|choc(?:olate)?\s*chip|cocoa|powdered\s*sugar|brown\s*sugar)/i, 'baking'],
+  [/\b(?:cream\s+of\s+tartar|baking|yeast|baking\s*(?:soda|powder)|vanilla|(?:butterscotch|white\s*chocolate|peanut\s*butter|choc(?:olate)?)\s*chips?|butterscotch|cocoa|powdered\s*sugar|brown\s*sugar)\b/i, 'baking'],
   [/\b(?:ketchup|mustard|mayo|mayonnaise|ranch|dressing|bbq|hot\s*sauce|salsa|soy\s*sauce|sauce|seasoning|spice)/i, 'condiments'],
   [/\b(?:haribo|skittles|starburst|sour\s*patch|twizzlers|hershey|reese|kit\s*kat|snickers|m\s*&\s*ms|jolly\s*rancher|airheads|swedish\s*fish|gumm(?:y|ies))\b/i, 'snacks'],
   [/\b(?:tortilla\s*chips?|potato\s*chips?|milk\s*chocolate|snack|chips?\b|dorito|tostito|cookie|candy|popcorn|pretzel|nuts?|trail\s*mix|granola\s*bar|fruit\s*snack)/i, 'snacks'],
-  [/\b(?:water|soda|coke|sprite|dr\s*pepper|juice|coffee|tea|gatorade|beer|wine|drink|la\s*croix)/i, 'beverages'],
+  [/\b(?:water|soda|coke|sprite|dr\s*pepper|juice|lemonade|limeade|kool\s*-?aid|capri\s*sun|seltzer|sparkling\s*water|coffee|tea|gatorade|beer|wine|drink|la\s*croix)/i, 'beverages'],
   [/\b(?:coffee\s*filters?|battery|batteries|light\s*bulb|bulb|tape|glue|foil|ziploc|bag(?:gie)?s?|storage|trash\s*bag)/i, 'household'],
   [/\b(?:paper\s*towel|toilet\s*paper|tp\b|napkin|tissue|kleenex|plate|(?:paper|solo|plastic|disposable|coffee|red)\s*cups?|paper\s*goods)/i, 'paper'],
   [/\b(?:dryer\s*sheets?|detergent|soap|bleach|clorox|lysol|cleaner|sponge|dishwasher|laundry|softener|windex)/i, 'cleaning'],
@@ -720,7 +724,11 @@ const KNOWN_ITEMS = [
   'green onions','green onion','bell pepper','bell peppers','sweet potato','sweet potatoes',
   'baby carrots','romaine lettuce','iceberg lettuce','spring mix','cherry tomatoes',
   'grape tomatoes','russet potatoes','red onion','red onions','yellow onion','yellow onions',
-  'green beans','brussels sprouts','snap peas','baby spinach',
+  'green beans','brussels sprouts','snap peas','baby spinach','pineapple','pineapples',
+  // flavoured things that are NOT the fruit (see MODIFIERS / HEADS below)
+  'lemonade','limeade','orange juice','apple juice','grape juice','cranberry juice',
+  'garlic bread','banana bread','onion rings','french fries','sweet potato fries','tater tots',
+  'frozen pizza','pizza','butterscotch chips','lemon pepper','apple cider vinegar',
   // meat + seafood
   'ground beef','ground turkey','ground chuck','chicken breast','chicken breasts',
   'chicken thighs','chicken tenders','pork chops','pork loin','beef stew meat',
@@ -887,12 +895,36 @@ const freshness = cat => ({
 const catOf = (name, catalog) => {
   const hit = (catalog || []).find(c => c.name.toLowerCase() === name.toLowerCase());
   if (hit && hit.category) return hit.category;          // the household's own memory wins
-  let best = null, bestLen = 0;
-  for (const [re, cat] of CATEGORY_WORDS) {
-    const m = String(name).match(re);
-    if (m && m[0].length > bestLen) { best = cat; bestLen = m[0].length; }
+  /* English compounds are head-final: the LAST word is the thing, the
+     words before it say which kind. "grape juice" is a juice, "banana
+     bread" is a bread, "apple cider vinegar" is a vinegar. So the row
+     whose match reaches furthest into the name wins; only among matches
+     that end at the same place does the longer one win, and table order
+     breaks what is left. (The old rule was longest-match alone, which is
+     why every fruit-flavoured thing went to produce.) */
+  const score = str => {
+    let best = null, bestEnd = -1, bestLen = 0, bestAt = -1;
+    for (const [re, cat] of CATEGORY_WORDS) {
+      const m = str.match(re);
+      if (!m) continue;
+      const end = m.index + m[0].length, len = m[0].length;
+      if (end > bestEnd || (end === bestEnd && len > bestLen)) { best = cat; bestEnd = end; bestLen = len; bestAt = m.index; }
+    }
+    return { best, at: bestAt };
+  };
+  const full = String(name).trim();
+  let r = score(full);
+  /* A trailing shape or measure word says how it comes, not what it is:
+     "toilet paper rolls" is paper, not a bakery roll. When the winning
+     match lives entirely inside that last word, score the name without it.
+     "trash bags" and "dryer sheets" keep theirs — the row that names them
+     starts before the shape word. */
+  const cut = full.replace(/\s+\S+$/, '');
+  if (cut && cut !== full && MEASURE_WORDS.has(full.slice(cut.length).trim().toLowerCase()) && r.at >= cut.length) {
+    const r2 = score(cut);
+    if (r2.best) r = r2;
   }
-  return best || 'other';
+  return r.best || 'other';
 };
 
 /* ---------------------------------------------------------------------------
@@ -1040,6 +1072,43 @@ const MAX_BRAND_TAIL = 6;
 /* Is this token something the parser recognises on its own? */
 const knownWord = t => BUILTIN.has(t) || catOf(t, null) !== 'other';
 
+/* A FLAVOUR IN FRONT OF A THING IS PART OF THE THING.
+ *
+ * "grape juice", "onion rings", "garlic bread", "lemon pepper", "celery
+ * salt": two words the lexicon knows separately, one item. The same class
+ * as "butter sticks" — and the proof that a lexicon of phrases cannot keep
+ * up, because the pattern is open-ended. So it is a rule: a fruit,
+ * vegetable or flavour word (MODIFIERS) directly before a word that takes
+ * a flavour (HEADS) joins it. One unknown word may sit between ("apple
+ * cider vinegar"). "eggs bacon" stays two items — eggs is not a modifier —
+ * and "onion garlic" stays two — garlic is not a head. */
+const MODIFIERS = new Set([
+  'apple','banana','orange','lemon','lime','grape','strawberry','blueberry','raspberry','blackberry',
+  'cherry','peach','pear','plum','mango','pineapple','watermelon','melon','coconut','cranberry','pomegranate',
+  'tomato','potato','onion','garlic','ginger','jalapeno','jalapeño','carrot','celery','cucumber','pumpkin',
+  'spinach','avocado','corn','chili','chile','mushroom','pepper','oatmeal','oat',
+  'butterscotch','peanut','chocolate','vanilla','honey','maple','cinnamon','almond','caramel','mint',
+  'ranch','buffalo','cheddar','cheese','sour','sweet','hot','bbq','teriyaki','sesame','wheat'
+]);
+const HEADS = new Set([
+  'juice','soda','pop','ade','jam','jelly','preserves','bread','muffin','muffins','pie','cake','cupcakes',
+  'chips','rings','vinegar','extract','seltzer','tea','yogurt','candy','pepper','salt','sauce','syrup',
+  'bar','bars','water','popsicle','popsicles','smoothie','cider','dressing','salsa','soup','cereal','oatmeal',
+  'pudding','cream','sherbet','sorbet','crackers','cookies','pretzels','popcorn','nuts','butter','oil','spread',
+  'seasoning','powder','flakes','fries','rolls','sticks','bites','puffs','mix','loaf','pieces','wafers',
+  'mustard','ketchup','mayo','chicken','wings','nuggets','pork','beef','sausage','tofu','glaze','marinade'
+]);
+const isModifier = t => MODIFIERS.has(t);
+const isHead = t => HEADS.has(t) || HEADS.has(t.replace(/s$/, ''));
+/* "grape juice", "apple cider vinegar": a flavour, an optional bridge word,
+   a head. Used by the splitter and by looksMerged, so what one joins the
+   other will let the catalog learn. */
+function isCompound(phrase) {
+  const toks = String(phrase).toLowerCase().split(/\s+/).filter(Boolean);
+  if (toks.length < 2 || toks.length > 3) return false;
+  return isModifier(toks[0]) && isHead(toks[toks.length - 1]);
+}
+
 /* Does this phrase come apart into things already known separately?
  *
  * "milk eggs" does: two groceries, no relationship. "ground beef" does not —
@@ -1057,6 +1126,7 @@ function looksMerged(phrase) {
   for (let n = Math.min(3, toks.length - 1); n >= 1; n--) {
     if (BRAND_SET.has(toks.slice(0, n).join(' '))) return false;
   }
+  if (isCompound(toks.join(' '))) return false;       // "grape juice" is one thing
   return toks.every(knownWord);
 }
 
@@ -1191,6 +1261,22 @@ function splitRun(part, knownSet) {
          used to close on "butter" and the orphan "sticks" became a row of
          its own. Up to two shape words ride along, into the name. */
       for (let f = 0; f < 2 && formAt(i); f++) i++;
+      /* A flavour word in front of a thing that takes one: "grape juice",
+         "garlic bread", "apple cider vinegar" (one bridge word allowed). */
+      if (!wasBrand && isModifier(normTok(toks[i - 1] || ''))) {
+        /* Up to two heads in a row ("cider vinegar"), or a known phrase that
+           ends in one ("ice cream"); one bridge word may sit in front. */
+        for (let hops = 0; hops < 2; hops++) {
+          const bridge = (i < toks.length && !knownAt(i) && !isNoise(toks[i]) && !qtyLen(i) && !isHead(normTok(toks[i]))
+                          && i + 1 < toks.length && isHead(normTok(toks[i + 1]))) ? 1 : 0;
+          const h = i + bridge;
+          if (h >= toks.length || isNoise(toks[h]) || qtyLen(h)) break;
+          const n = Math.max(1, knownAt(h));
+          if (!isHead(normTok(toks[h + n - 1]))) break;
+          i = h + n;
+        }
+        for (let f = 0; f < 2 && formAt(i); f++) i++;
+      }
       /* A brand introduces a product; it does not end one. Absorb what
          follows until something clearly begins a new item. */
       if (wasBrand) {
@@ -2997,7 +3083,7 @@ function wallToUtc(date: string, time: string, tz: string): string {
 /* Bumped by hand on every deploy. Text "help" to read it back. Without this
    there is no way to tell a deployed build from an editor draft, and we lost
    an hour to exactly that. */
-const BUILD = '2026-09-12g-m2';
+const BUILD = '2026-09-14b-m2';
 
 const WEBHOOK_URL = 'https://rauvytdltnbqrvyiornh.supabase.co/functions/v1/sms-inbound';
 
@@ -3987,23 +4073,53 @@ async function setDinner(db: any, routed: any, sender: any, house: any) {
   const recipe = scored[0]?.r ?? null;
   const dflt = house?.default_servings ?? 4;
   const servings = recipe?.servings && recipe.servings >= 2 * dflt ? recipe.servings : dflt;
-  const row: any = {
-    household_id: HOUSEHOLD, plan_date: routed.date, slot: 'dinner',
-    recipe_id: recipe?.id ?? null, freeform: recipe ? null : routed.dish,
-    servings, created_by: sender.id, updated_at: new Date().toISOString()
-  };
-  const { data: existing } = await db.from('meal_plan').select('id')
-    .eq('household_id', HOUSEHOLD).eq('plan_date', routed.date).eq('slot', 'dinner')
-    .is('deleted_at', null).maybeSingle();
-  const { error } = existing
-    ? await db.from('meal_plan').update(row).eq('id', existing.id)
-    : await db.from('meal_plan').insert(row);
+  /* A week's meals, not seven fixed days (029). "We're having tacos
+     tonight" when tacos are planned for Thursday MOVES Thursday's tacos to
+     tonight; whatever tonight had goes back into the week's tray. Nothing is
+     overwritten and nothing is deleted. Only a night that already holds the
+     same dish is updated in place. */
+  const ws = weekStartOf(routed.date);
+  const { data: week } = await db.from('meal_plan')
+    .select('id, plan_date, freeform, recipe_id, recipes(name)')
+    .eq('household_id', HOUSEHOLD).eq('slot', 'dinner').is('deleted_at', null).eq('week_start', ws);
+  const nameOf = (m: any) => m.recipes?.name || m.freeform || '';
+  const same = (m: any) => (recipe && m.recipe_id === recipe.id) || scoreTitle(routed.dish, nameOf(m)) >= 0.6;
+  const onNight = (week ?? []).find((m: any) => m.plan_date === routed.date);
+  const elsewhere = (week ?? []).find((m: any) => m.plan_date !== routed.date && same(m));
+  const movedFrom = elsewhere?.plan_date ?? null;      // before anything changes
+  let bumped: any = null, error: any = null;
+  if (onNight && same(onNight)) {
+    ({ error } = await db.from('meal_plan').update({ servings, updated_at: new Date().toISOString() }).eq('id', onNight.id));
+  } else if (elsewhere) {
+    const r = await db.rpc('meal_move', { p_meal: elsewhere.id, p_date: routed.date });
+    error = r.error; bumped = (week ?? []).find((m: any) => m.id === r.data) ?? null;
+  } else {
+    const row: any = {
+      household_id: HOUSEHOLD, plan_date: null, week_start: ws, slot: 'dinner',
+      recipe_id: recipe?.id ?? null, freeform: recipe ? null : routed.dish,
+      servings, created_by: sender.id, updated_at: new Date().toISOString()
+    };
+    const ins = await db.from('meal_plan').insert(row).select('id').single();
+    error = ins.error;
+    if (!error) {
+      const r = await db.rpc('meal_move', { p_meal: ins.data.id, p_date: routed.date });
+      error = r.error; bumped = (week ?? []).find((m: any) => m.id === r.data) ?? null;
+    }
+  }
   if (error) return twiml(`Could not save that: ${error.message}`);
   const line = await dinnerLine(db, house, routed.date);
   const when = routed.date === nowYmd(house?.timezone) ? 'tonight' : `on ${prettyShort(routed.date)}`;
   return twiml((line ?? `Dinner: ${routed.dish}`).replace(/^Dinner:/, `Dinner ${when}:`) +
-               (recipe ? ' (from your recipes)' : ''));
+               (recipe ? ' (from your recipes)' : '') +
+               (movedFrom ? ` — moved from ${prettyShort(movedFrom)}` : '') +
+               (bumped ? `. ${nameOf(bumped) || 'The other dinner'} is back in the week's tray.` : ''));
 }
+
+/* The Sunday a date belongs to (029 week_start). */
+const weekStartOf = (d: string) => {
+  const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - x.getUTCDay());
+  return x.toISOString().slice(0, 10);
+};
 
 /* "Addie's at church, 3 for dinner" — the number wins over the calendar's
    count, and the servings follow it. A freeform "Dinner" row is made when
@@ -4059,6 +4175,22 @@ async function repeatLastWeek(db: any, sender: any, house: any) {
                 recipe_id: m.recipe_id, freeform: m.recipe_id ? null : m.freeform,
                 servings: m.servings, cook_id: m.cook_id, ready_by: m.ready_by, created_by: sender.id });
     said.push(`${DOW3[new Date(ahead[i] + 'T12:00:00Z').getUTCDay()]} ${(m as any).recipes?.name || m.freeform || 'Dinner'}`);
+  }
+  /* Last week's tray comes along too, still undated (029). */
+  const thisWs = weekStartOf(ahead[0]), lastWs = weekStartOf(back[0]);
+  const { data: tray } = await db.from('meal_plan')
+    .select('recipe_id, freeform, servings, cook_id, recipes(name)')
+    .eq('household_id', HOUSEHOLD).eq('slot', 'dinner').is('deleted_at', null)
+    .is('plan_date', null).eq('week_start', lastWs);
+  const { data: haveTray } = await db.from('meal_plan').select('recipe_id, freeform')
+    .eq('household_id', HOUSEHOLD).eq('slot', 'dinner').is('deleted_at', null)
+    .is('plan_date', null).eq('week_start', thisWs);
+  for (const m of tray ?? []) {
+    if ((haveTray ?? []).some((h: any) => (m.recipe_id && h.recipe_id === m.recipe_id) || (!m.recipe_id && h.freeform === m.freeform))) continue;
+    rows.push({ household_id: HOUSEHOLD, plan_date: null, week_start: thisWs, slot: 'dinner',
+                recipe_id: m.recipe_id, freeform: m.recipe_id ? null : m.freeform,
+                servings: m.servings, cook_id: m.cook_id, created_by: sender.id });
+    said.push(`(no day) ${(m as any).recipes?.name || m.freeform || 'Dinner'}`);
   }
   if (!rows.length) return twiml('This week is already planned — nothing to copy.');
   const { error } = await db.from('meal_plan').insert(rows);

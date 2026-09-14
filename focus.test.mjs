@@ -39,7 +39,8 @@ const MEMBERS = [
   { household_id: HH, id: 'm4', name: 'Bryce', color: '#37588f', role: 'child', default_lead_minutes: 15, sort_order: 4, aliases: [] }
 ];
 const tables = { members: MEMBERS, households: [{ id: HH, name: 'Family Hub', passcode: 'KELLEY', timezone: 'America/Chicago' }],
-  shopping_items: [], todos: [], recipes: [], stores: [], shopping_catalog: [], store_aisles: [], shopping_categories: [],
+  shopping_items: [], todos: [], recipes: [], stores: [{ id: 'kr', household_id: HH, name: 'Kroger', aliases: [], sort_order: 1 }],
+  shopping_catalog: [], store_aisles: [], shopping_categories: [{ name: 'produce', sort_order: 1 }, { name: 'dairy', sort_order: 5 }, { name: 'beverages', sort_order: 9 }],
   events: [], event_exceptions: [], member_absences: [], meal_plan: [], event_done: [] };
 let seq = 0;
 const log = [];
@@ -50,9 +51,11 @@ function from(table){
     select(){ return chain; }, order(){ return chain; }, limit(){ return chain; }, or(){ return chain; }, gte(){ return chain; }, not(){ return chain; },
     eq(k, v){ st.filters.push(r => r[k] === v); return chain; },
     is(k, v){ st.filters.push(r => (r[k] ?? null) === v); return chain; },
-    insert(r){ log.push(['insert', table]); const list = [].concat(r).map(x => ({ id: `${table}-${++seq}`, created_at: new Date().toISOString(), ...x }));
+    insert(r){ log.push(['insert', table]); const list = [].concat(r).map(x => ({ id: `${table}-${++seq}`, created_at: new Date().toISOString(), ...x, ...(table === 'meal_plan' && x.plan_date ? { week_start: ws(x.plan_date) } : {}) }));
       (tables[table] ||= []).push(...list); st.ins = list; return chain; },
-    upsert(r){ log.push(['upsert', table]); return chain; }, update(p){ log.push(['update', table]); st.upd = p; return chain; }, delete(){ st.del = true; return chain; },
+    upsert(r, o){ log.push(['upsert', table]); const keys = (o?.onConflict || 'id').split(',');
+      for (const x of [].concat(r)) { const list = (tables[table] ||= []); const i = list.findIndex(y => keys.every(k => y[k] === x[k])); if (i >= 0) list[i] = { ...list[i], ...x }; else list.push({ ...x }); }
+      return chain; }, update(p){ log.push(['update', table]); st.upd = p; return chain; }, delete(){ st.del = true; return chain; },
     single(){ return Promise.resolve({ data: rows()[0] ?? null, error: null }); },
     maybeSingle(){ return Promise.resolve({ data: rows()[0] ?? null, error: null }); },
     then(res){ if (st.del) { tables[table] = (tables[table] || []).filter(r => !st.filters.every(f => f(r))); }
@@ -61,7 +64,14 @@ function from(table){
   };
   return chain;
 }
-const db = { from, rpc: () => Promise.resolve({ data: null, error: null }),
+const ws = d => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() - x.getDay()); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; };
+const db = { from, rpc: (fn, a) => {
+    /* meal_move as 029 defines it: bump the occupant into the tray, then move. */
+    if (fn === 'meal_move') { const m = tables.meal_plan.find(x => x.id === a.p_meal); if (!m || m.plan_date === a.p_date) return Promise.resolve({ data: null, error: null });
+      const occ = tables.meal_plan.find(x => x.plan_date === a.p_date && x.id !== m.id && !x.deleted_at); if (occ) { occ.plan_date = null; occ.week_start = ws(a.p_date); }
+      m.plan_date = a.p_date; m.week_start = ws(a.p_date); return Promise.resolve({ data: occ?.id ?? null, error: null }); }
+    if (fn === 'meal_unschedule') { const m = tables.meal_plan.find(x => x.id === a.p_meal); if (m) m.plan_date = null; return Promise.resolve({ data: null, error: null }); }
+    return Promise.resolve({ data: null, error: null }); },
   channel(){ const c = { on(){ return c; }, subscribe(){ return c; } }; return c; } };
 
 /* ---- the real app.js, with only the network swapped out ------------------ */
@@ -154,6 +164,26 @@ try {
     globalThis.__db.from = realInsert;
   }
 
+  /* --- the aisle map builds itself: tap the chip, type the aisle, per store */
+  {
+    typeEnter($('#shop-in'), 'lemonade, apples, lemons'); await tick(120);
+    ok('aisle: lemonade is a beverage, not produce', $$('.shop-row').some(r => r.textContent.includes('lemonade') && r.textContent.includes('beverages') && !r.textContent.includes('pick out')));
+    ok('aisle: no editor without a store chip', $$('[data-aisle-edit]').length === 0);
+    $('#bento [data-store="kr"]').click(); await tick(30);
+    const chip = $$('[data-aisle-edit="produce"]')[0];
+    ok('aisle: produce chip offers to set the aisle at Kroger', !!chip && chip.textContent.includes('aisle?') && chip.title.includes('Kroger'));
+    chip.click();
+    const f = $('.aisle-edit'); ok('aisle: inline editor appears in the row, naming the store', !!f && f.textContent.includes('produce at Kroger'));
+    ok('aisle: editor input is focused (inside the tap)', w.document.activeElement === f.querySelector('input'));
+    f.querySelector('input').value = '2 front left'; f.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })); await tick(60);
+    ok('aisle: saved to store_aisles for Kroger/produce', tables.store_aisles.some(a => a.store_id === 'kr' && a.category === 'produce' && a.aisle === '2 front left' && a.sort_order === 2));
+    ok('aisle: every produce row now shows it', $$('.shop-row').filter(r => /apples|lemons/.test(r.textContent)).every(r => r.textContent.includes('Aisle 2 front left')));
+    ok('aisle: the beverage row still has none', $$('.shop-row').find(r => r.textContent.includes('lemonade'))?.textContent.includes('aisle?'));
+    ok('aisle: box still the same node after all that', $('#shop-in') === $('#shop-in') && $('#shop-in').isConnected);
+    $('#bento [data-store=""]').click(); await tick(30);
+    ok('aisle: on the All chip nothing is editable (aisles are per store)', $$('[data-aisle-edit]').length === 0);
+  }
+
   /* --- todos --------------------------------------------------------------- */
   await goTab('todos');
   await prove('todos', '#tadd', '#tin', 'clean the garage', '.todo', 'Clean the garage');
@@ -169,6 +199,32 @@ try {
     ok('meals: same input node still in the document', inp.isConnected && $('#rin') === inp);
     ok('meals: box is empty', inp.value === '');
     ok('meals: confirm sheet opened for the typed name', $('#msheet').classList.contains('on') && $('#msheet-body').textContent.length > 0);
+  }
+
+  /* --- meals: a week's set, not seven fixed days (029) -------------------- */
+  {
+    const today = new Date(); const t = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+    $('#msheet').classList.remove('on');
+    $(`[data-plan="${t}"]`).click(); await tick(60);
+    $('#p-free').value = 'chicken'; $('#p-go').click(); await tick(80);
+    ok('meals: a dinner planned on today', $$('.mday').some(r => r.textContent.includes('chicken')) && tables.meal_plan.some(m => m.plan_date === t && m.freeform === 'chicken'));
+    $('[data-plan-week]').click(); await tick(60);
+    ok('meals: the week sheet has no day filled in', $('#p-date').value === '' && $('#p-go').textContent === 'Add to the week');
+    $('#p-free').value = 'tacos'; $('#p-go').click(); await tick(80);
+    const trayRow = $$('.mday.tray').find(r => r.textContent.includes('tacos'));
+    ok('meals: tacos sits in the tray with no day', !!trayRow && tables.meal_plan.some(m => m.freeform === 'tacos' && m.plan_date === null && m.week_start === ws(t)));
+    trayRow.querySelector('[data-tonight]').click(); await tick(80);
+    const chicken = tables.meal_plan.find(m => m.freeform === 'chicken'), tacos = tables.meal_plan.find(m => m.freeform === 'tacos');
+    ok('meals: "tonight" moves tacos onto today', tacos.plan_date === t);
+    ok('meals: chicken is bumped into the tray, not deleted', chicken.plan_date === null && !chicken.deleted_at && chicken.week_start === ws(t));
+    ok('meals: the tray now shows chicken', $$('.mday.tray').some(r => r.textContent.includes('chicken')));
+    ok('meals: the toast says what happened', $('#toast').textContent.includes("chicken is back in the week's tray"));
+    $$('.mday:not(.tray) [data-meal]').find(b => b.textContent.includes('tacos')).click(); await tick(80);
+    ok('meals: the sheet offers the seven nights and "no day yet"', $$('#msheet [data-move]').length === 8 && $('#msheet [data-move=""]').getAttribute('aria-pressed') === 'false');
+    $('#msheet [data-move=""]').click(); await tick(80);
+    ok('meals: "no day yet" puts it back in the tray', tables.meal_plan.find(m => m.freeform === 'tacos').plan_date === null);
+    ok('meals: the recipe box survived all of it', $('#rin')?.isConnected);
+    $('#msheet').classList.remove('on');
   }
 
   /* --- calendar quick-add: Enter previews, the node is static HTML -------- */

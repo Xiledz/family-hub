@@ -28,7 +28,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-14a';
+const APP_BUILD = '2026-09-14b';
 
 /* ============================================================================
  * MODES — the kitchen iPad.
@@ -193,6 +193,11 @@ const DB = {
       .is('deleted_at', null).maybeSingle();
     state.todayMeal = data || null;
     state.todayHome = await MEAL.homeFor(ymd(new Date()));
+    /* What is in this week's tray (029): meals with no night yet. */
+    const { data: tray } = await state.db.from('meal_plan').select('id, freeform, recipes(name)')
+      .eq('household_id', CONFIG.HOUSEHOLD_ID).eq('slot', 'dinner').is('deleted_at', null)
+      .is('plan_date', null).eq('week_start', startOfWeek(ymd(new Date()))).order('created_at');
+    state.todayTray = tray || [];
   },
 
   async saveEvent(e){
@@ -500,7 +505,12 @@ function anchorNote(m){
    the table — or the one link that fixes "what's for dinner?" */
 function dinnerLine(){
   const m = state.todayMeal;
-  if (!m) return `<div class="tdinner"><span class="tdlabel">Dinner</span> Nothing planned — <button type="button" class="link" data-plan-today>Plan</button></div>`;
+  if (!m) {
+    const tray = state.todayTray || [];
+    if (tray.length) return `<div class="tdinner"><span class="tdlabel">Dinner</span> Not picked yet — ${tray.slice(0, 3).map(t =>
+      `<button type="button" class="link" data-tonight="${t.id}">${esc(t.recipes?.name || t.freeform || 'Dinner')}</button>`).join(' · ')}${tray.length > 3 ? ` · +${tray.length - 3}` : ''} <span class="hintline" style="display:inline">(tap one for tonight)</span></div>`;
+    return `<div class="tdinner"><span class="tdlabel">Dinner</span> Nothing planned — <button type="button" class="link" data-plan-today>Plan</button></div>`;
+  }
   const dish = m.recipes?.name || m.freeform || 'Dinner';
   const cookId = m.cook_id || state.household?.default_cook_id || m.created_by || null;
   const cook = state.members.find(x => x.id === cookId);
@@ -659,6 +669,7 @@ function render(){
   if (planToday) planToday.onclick = async () => { await SHOP.load(); await MEAL.load(); openPlanSheet(ymd(new Date())); };
   const mealToday = $('[data-meal-today]');
   if (mealToday) mealToday.onclick = async () => { await SHOP.load(); await MEAL.load(); openMealSheet(mealToday.dataset.mealToday); };
+  $$('[data-tonight]').forEach(b => b.onclick = async () => { await MEAL.load(); await MEAL.move(b.dataset.tonight, ymd(new Date())); });
   $$('[data-evtick]').forEach(b => b.onclick = e => { e.stopPropagation(); EV.toggle(b.dataset.evtick); });
   $$('[data-day]').forEach(b => b.onclick = () => openSheet(null, b.dataset.day));
 }
@@ -860,6 +871,27 @@ const SHOP = {
     const junk = n => isFormOnly(n) && parseShopping(n, { stores: [], catalog: [] }).items.every(i => i.category === 'other');
     const badCat = state.shopCatalog.filter(c => junk(c.name)).map(c => c.name);
     const badItems = state.shopItems.filter(i => !i.got && junk(i.name));
+    /* Re-file what the parser now classifies differently. The catalog's
+       category was only ever written by the parser (never by hand — the
+       aisle editor writes store_aisles), and the catalog's memory wins over
+       the rules, so a "lemonade → produce" learned last month would have
+       outlived the fix forever. Unbought rows follow their catalog entry. */
+    const refile = [];
+    for (const c of state.shopCatalog) {
+      const now = parseShopping(c.name, { stores: [], catalog: [] }).items;
+      if (now.length !== 1 || now[0].name.toLowerCase() !== c.name.toLowerCase()) continue;
+      if (now[0].category !== 'other' && now[0].category !== c.category) refile.push({ row: c, category: now[0].category, pick: !!now[0].pickYourself });
+    }
+    for (const r of refile) {
+      await state.db.from('shopping_catalog').update({ category: r.category }).eq('id', r.row.id);
+      r.row.category = r.category;
+      const same = state.shopItems.filter(i => !i.got && i.name.toLowerCase() === r.row.name.toLowerCase() && i.category !== r.category);
+      if (same.length) {
+        await state.db.from('shopping_items').update({ category: r.category, pick_yourself: r.pick, online_ok: !r.pick }).in('id', same.map(i => i.id));
+        for (const i of same) { i.category = r.category; i.pick_yourself = r.pick; i.online_ok = !r.pick; }
+      }
+    }
+    if (refile.length) console.info('catalog repair: re-filed', refile.map(r => `${r.row.name} → ${r.category}`));
     if (!badCat.length && !badItems.length) return;
     if (badCat.length) {
       await state.db.from('shopping_catalog').delete()
@@ -1041,6 +1073,35 @@ const SHOP = {
   },
   aisleOf(storeId, category){
     return state.shopAisles.find(a => a.store_id === storeId && a.category === category)?.aisle || null;
+  },
+
+  /* THE MAP BUILDS ITSELF WHILE THEY SHOP. Only HEB on 1488 was ever seeded
+     (011); Kroger and the others had no rows at all, so every row showed a
+     grey category name and looked broken. Now a tap on that chip, with a
+     store chip selected, takes the aisle for that category AT THAT STORE and
+     it applies to everything in the category from then on. One walk through
+     Kroger and the map exists. A leading number orders the walk; "back
+     wall" or "front left" is fine too and keeps the category's default
+     order. Blank clears it. */
+  async setAisle(storeId, category, text){
+    const aisle = String(text || '').trim();
+    if (!storeId || !category) return;
+    if (!aisle) {
+      await state.db.from('store_aisles').delete().eq('store_id', storeId).eq('category', category);
+      state.shopAisles = state.shopAisles.filter(a => !(a.store_id === storeId && a.category === category));
+      return;
+    }
+    const num = aisle.match(/^\s*(\d+)/);
+    const prev = state.shopAisles.find(a => a.store_id === storeId && a.category === category);
+    const catDefault = 100 + (state.shopCats.find(c => c.name === category)?.sort_order ?? 999);
+    const row = { store_id: storeId, category, aisle,
+                  sort_order: num ? +num[1] : (prev?.sort_order ?? catDefault),
+                  verified_at: new Date().toISOString(), verified_by: state.me?.id || null };
+    const { error } = await state.db.from('store_aisles').upsert(row, { onConflict: 'store_id,category' });
+    if (error) { console.error(error); toast('Could not save the aisle'); return; }
+    if (prev) Object.assign(prev, row); else state.shopAisles.push(row);
+    const store = state.stores.find(s => s.id === storeId)?.name || 'this store';
+    toast(`${category}: aisle ${aisle} at ${store}`);
   }
 };
 
@@ -1156,7 +1217,9 @@ function renderShopping(){
       <button class="tick" data-tick="${it.id}" aria-label="${it.got ? 'Not got' : 'Got it'}">${it.got ? '&#10003;' : ''}</button>
       <span class="body">
         <span class="nm">${it.qty ? `<b>${esc(it.qty)}</b> ` : ''}${esc(it.name)}${it.note ? ` <i>(${esc(it.note)})</i>` : ''}</span>
-        <span class="meta">${aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}${saleTag(it)}</span>
+        <span class="meta">${sel && !it.got
+          ? `<button type="button" class="aisle${aisle ? '' : ' dim'} edit" data-aisle-edit="${esc(it.category)}" title="Set the aisle for ${esc(it.category)} at ${esc(storeName(sel))}">${aisle ? `Aisle ${esc(aisle)}` : `${esc(it.category)} · aisle?`}</button>`
+          : aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}${saleTag(it)}</span>
       </span>
       <button class="x" data-x="${it.id}" aria-label="Remove">&times;</button>
     </li>`;
@@ -1227,6 +1290,21 @@ function renderShopping(){
   $$('#bento [data-sale-add]').forEach(b => b.onclick = () => SHOP.add(b.dataset.saleAdd));
   $('#shop-ad').onclick = () => openAdSheet('');
   $$('#bento [data-x]').forEach(b => b.onclick = () => SHOP.remove(b.dataset.x));
+  /* Tap the aisle chip → a one-line editor in its place, per store. Built
+     inside the tap, so the keyboard opens on the phone. */
+  $$('#bento [data-aisle-edit]').forEach(b => b.onclick = () => {
+    const category = b.dataset.aisleEdit;
+    const cur = SHOP.aisleOf(sel, category) || '';
+    const f = document.createElement('form');
+    f.className = 'aisle-edit'; f.autocomplete = 'off';
+    f.innerHTML = `<label>${esc(category)} at ${esc(storeName(sel))}</label>
+      <input placeholder="Aisle number, or “back wall”" value="${esc(cur)}" enterkeyhint="done">
+      <button type="submit">Save</button><button type="button" class="plain" data-cancel>Cancel</button>`;
+    b.replaceWith(f);
+    const inp = f.querySelector('input'); inp.focus(); inp.select();
+    f.querySelector('[data-cancel]').onclick = () => render();
+    f.onsubmit = async e => { e.preventDefault(); await SHOP.setAisle(sel, category, inp.value); render(); };
+  });
   const done = $('#shop-done'); if (done) done.onclick = () => SHOP.clear(sel, true);
   const clr = $('#shop-clear'); if (clr) clr.onclick = () => {
     /* One confirmation, naming what is about to go. Recoverable either way,
@@ -1639,9 +1717,10 @@ const MEAL = {
     const [r, m] = await Promise.all([
       state.db.from('recipes').select('*, recipe_ingredients(*), recipe_steps(*)')
         .eq('household_id', CONFIG.HOUSEHOLD_ID).is('deleted_at', null).order('name'),
+      /* By week, not by day (029): the tray rows have no plan_date. */
       state.db.from('meal_plan').select('*, recipes(name, servings, cook_minutes, image_url)')
         .eq('household_id', CONFIG.HOUSEHOLD_ID).is('deleted_at', null)
-        .gte('plan_date', ymd(from)).order('plan_date')
+        .gte('week_start', startOfWeek(ymd(from))).order('plan_date', { nullsFirst: false }).order('created_at')
     ]);
     state.recipes = (r.data || []).map(x => ({
       ...x,
@@ -1828,8 +1907,11 @@ const MEAL = {
   },
 
   async plan(date, recipeId, opts = {}){
+    /* No day: a meal for the week, in the tray (029). */
+    if (!date) date = null;
     const row = {
       household_id: CONFIG.HOUSEHOLD_ID, plan_date: date, slot: 'dinner',
+      week_start: date ? startOfWeek(date) : (state.mealWeek || startOfWeek(ymd(new Date()))),
       recipe_id: recipeId || null, freeform: recipeId ? null : (opts.freeform || 'Dinner'),
       servings: opts.servings ?? (state.household?.default_servings ?? 4),
       ready_by: opts.ready_by || null,
@@ -1845,7 +1927,7 @@ const MEAL = {
        ON CONFLICT cannot infer a partial index without its predicate — so
        an upsert on those columns is refused by Postgres. Find, then update
        or insert. */
-    const existing = state.meals.find(m => m.plan_date === date && m.slot === 'dinner' && !m.deleted_at);
+    const existing = date && state.meals.find(m => m.plan_date === date && m.slot === 'dinner' && !m.deleted_at);
     let data, error;
     if (existing) {
       ({ data, error } = await state.db.from('meal_plan').update(row).eq('id', existing.id).select('id').single());
@@ -1855,6 +1937,37 @@ const MEAL = {
     if (error) { console.error(error); toast('Could not plan that'); return null; }
     await MEAL.load(); render();
     return data.id;
+  },
+
+  /* A WEEK'S MEALS, NOT SEVEN FIXED DAYS (029). Days are an intention;
+     the night decides. Moving onto a taken night bumps that meal into the
+     week's tray — never deleted — and the countdown follows the move
+     (trigger). One call each, all-or-nothing in the database. */
+  nameOf(m){ return m?.recipes?.name || m?.freeform || 'Dinner'; },
+  async move(id, date){
+    const { data: bumped, error } = await state.db.rpc('meal_move', { p_meal: id, p_date: date });
+    if (error) { console.error(error); toast('Could not move that'); return; }
+    const was = state.meals.find(m => m.id === bumped);
+    await MEAL.load(); render();
+    const day = new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+    toast(was ? `${MEAL.nameOf(state.meals.find(m => m.id === id))} → ${day}. ${MEAL.nameOf(was)} is back in the week's tray.`
+              : `Moved to ${day}`);
+  },
+  async unschedule(id){
+    const { error } = await state.db.rpc('meal_unschedule', { p_meal: id });
+    if (error) { console.error(error); toast('Could not do that'); return; }
+    await MEAL.load(); render();
+  },
+  async swap(a, b){
+    const { error } = await state.db.rpc('meal_swap', { p_a: a, p_b: b });
+    if (error) { console.error(error); toast('Could not swap those'); return; }
+    await MEAL.load(); render();
+  },
+  /* A tray meal left behind by a past week: bring it into the week shown. */
+  async carry(id, weekStart){
+    const { error } = await state.db.from('meal_plan').update({ week_start: weekStart }).eq('id', id);
+    if (error) { console.error(error); toast('Could not move that'); return; }
+    await MEAL.load(); render();
   },
 
   /* Change the cook on a planned meal. The meal_resync trigger rebuilds the
@@ -2031,9 +2144,25 @@ function renderMeals(){
       startImport(v);
     };
   }
+  /* The week's tray: meals with no night yet (029). And anything a past
+     week left in its tray, offered once, never moved on its own. */
+  const tray = state.meals.filter(m => !m.plan_date && m.slot === 'dinner' && m.week_start === state.mealWeek);
+  const left = state.meals.filter(m => !m.plan_date && m.slot === 'dinner' && m.week_start < state.mealWeek && !m.done_at);
+  const trayRow = m => `<div class="mday tray" data-tray="${m.id}">
+      <span class="mdate">no day</span>
+      <button class="mname" data-meal="${m.id}">${esc(MEAL.nameOf(m))}</button>
+      <button class="mplan" data-tonight="${m.id}">tonight</button>
+    </div>`;
   slot('meal-week', `<div class="ch"><span>This week</span>
           <span><button class="link" data-wk="-7">‹</button> <button class="link" data-wk="0">today</button> <button class="link" data-wk="7">›</button></span></div>
-        ${days.map(dayRow).join('')}`);
+        ${days.map(dayRow).join('')}
+        <div class="ch" style="margin-top:12px"><span>Also this week</span><button class="link" data-plan-week>+ add a meal</button></div>
+        ${tray.length ? tray.map(trayRow).join('')
+          : `<p class="hint" style="padding:4px 2px 0">Meals for the week that have no night yet. Tap a meal on a day to move it; what it bumps lands here.</p>`}
+        ${left.length ? `<div class="ch" style="margin-top:12px"><span>Left from last week</span></div>
+          ${left.map(m => `<div class="mday tray" data-left="${m.id}"><span class="mdate">${esc(new Date(m.week_start + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }))}</span>
+            <button class="mname" data-meal="${m.id}">${esc(MEAL.nameOf(m))}</button>
+            <button class="mplan" data-carry="${m.id}">this week</button><button class="mplan" data-drop="${m.id}">drop</button></div>`).join('')}` : ''}`);
   slot('meal-rhead', `<div class="ch"><span>Recipes</span><b>${state.recipes.length}</b></div>`);
   slot('meal-rbody', `<p class="hint">Pinterest: Share → <b>Copy link</b>, paste it here. Any recipe site works too. Family recipes: type the name, then paste the ingredients.</p>
         ${state.recipes.length ? `<div class="rgrid">${state.recipes.map(card).join('')}</div>` : ''}`);
@@ -2044,6 +2173,10 @@ function renderMeals(){
     render();
   });
   $$('[data-plan]').forEach(b => b.onclick = () => openPlanSheet(b.dataset.plan));
+  const pw = $('[data-plan-week]'); if (pw) pw.onclick = () => openPlanSheet(null);
+  $$('[data-tonight]').forEach(b => b.onclick = () => MEAL.move(b.dataset.tonight, ymd(new Date())));
+  $$('[data-carry]').forEach(b => b.onclick = () => MEAL.carry(b.dataset.carry, state.mealWeek));
+  $$('[data-drop]').forEach(b => b.onclick = () => { if (confirm('Drop this meal? Un-bought items from it come off the list.')) MEAL.unplan(b.dataset.drop); });
   $$('[data-meal]').forEach(b => b.onclick = () => openMealSheet(b.dataset.meal));
   $$('[data-mealtick]').forEach(b => b.onclick = () => {
     const m = state.meals.find(x => x.id === b.dataset.mealtick); MEAL.setMealDone(m.id, !m.done_at);
@@ -2221,9 +2354,10 @@ function defaultServings(recipe){
 const LEAVE_MIN = 15, EAT_MIN = 20;
 
 async function openPlanSheet(date, recipeId = null){
-  const home = await MEAL.homeFor(date);
+  /* No date: a meal for the week with no night yet (029). */
+  const home = date ? await MEAL.homeFor(date) : null;
   /* Anything timed after 3pm that day is a collision worth timing dinner to. */
-  const evening = onDay(date).filter(e => !e.all_day && new Date(e.starts_at).getHours() >= 15)
+  const evening = (date ? onDay(date) : []).filter(e => !e.all_day && new Date(e.starts_at).getHours() >= 15)
     .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
   const servingsFor = rid => {
     const r = state.recipes.find(x => x.id === rid);
@@ -2233,7 +2367,7 @@ async function openPlanSheet(date, recipeId = null){
   };
   const opts = state.recipes.map(r => `<option value="${r.id}"${r.id === recipeId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
   const html = `
-    <div class="f"><label>Day</label><input id="p-date" type="date" value="${date}"></div>
+    <div class="f"><label>Day <span style="text-transform:none;letter-spacing:0;font-weight:500">(leave blank: sometime this week)</span></label><input id="p-date" type="date" value="${date || ''}"></div>
     <div class="f"><label>What</label>
       <select id="p-recipe"><option value="">— something else —</option>${opts}</select>
       <input id="p-free" placeholder="e.g. pizza night, leftovers" style="margin-top:6px${recipeId ? ';display:none' : ''}"></div>
@@ -2247,8 +2381,8 @@ async function openPlanSheet(date, recipeId = null){
       <div class="hintline" id="p-anchor-hint">Tap one and dinner is timed to make it: on the table ${LEAVE_MIN + EAT_MIN} minutes before.</div></div>` : ''}
     <div class="f"><label>Cook</label>${cookChips(MEAL.defaultCook())}</div>
     <p class="hint">The countdown — thaw, preheat, start cooking — goes to the cook. Set the time and it works backwards from it.</p>
-    <div class="actions"><button type="button" id="p-go" class="primary">Plan dinner</button></div>`;
-  openMSheet('Plan dinner', html, body => {
+    <div class="actions"><button type="button" id="p-go" class="primary">${date ? 'Plan dinner' : 'Add to the week'}</button></div>`;
+  openMSheet(date ? 'Plan dinner' : 'A meal for the week', html, body => {
     const sel = body.querySelector('#p-recipe'), free = body.querySelector('#p-free');
     sel.onchange = () => {
       free.style.display = sel.value ? 'none' : '';
@@ -2281,7 +2415,7 @@ async function openPlanSheet(date, recipeId = null){
     bindCookChips(body);
     body.querySelector('#p-go').onclick = async () => {
       const rid = sel.value || null;
-      const id = await MEAL.plan(body.querySelector('#p-date').value, rid, {
+      const id = await MEAL.plan(body.querySelector('#p-date').value || null, rid, {
         freeform: free.value.trim() || 'Dinner',
         servings: +body.querySelector('#p-serv').value || null,
         ready_by: body.querySelector('#p-ready').value || null,
@@ -2320,13 +2454,19 @@ async function openMealSheet(id){
      else the planner. Shown so "who's got dinner" has an answer on the card. */
   const cookId = m.cook_id || MEAL.defaultCook() || m.created_by || null;
   const cook = state.members.find(x => x.id === cookId);
-  const home = await MEAL.homeFor(m.plan_date);
+  const home = m.plan_date ? await MEAL.homeFor(m.plan_date) : null;
+  /* Which night (029): the seven days of its week, or none. */
+  const wk = m.week_start || startOfWeek(m.plan_date || ymd(new Date()));
+  const dayChips = [...Array(7)].map((_, i) => { const d = addDaysS(wk, i); const taken = state.meals.find(x => x.plan_date === d && x.slot === 'dinner' && x.id !== m.id);
+    return `<button type="button" class="chip" data-move="${d}" aria-pressed="${d === m.plan_date}" title="${taken ? `${esc(MEAL.nameOf(taken))} is on that night — it goes back to the tray` : ''}">${DOW[new Date(d + 'T12:00:00').getDay()]}${taken ? ' ·' : ''}</button>`; }).join('')
+    + `<button type="button" class="chip" data-move="" aria-pressed="${!m.plan_date}">no day yet</button>`;
   const html = `
-    <p class="rmeta">${new Date(m.plan_date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'})}
+    <p class="rmeta">${m.plan_date ? new Date(m.plan_date + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'}) : 'This week — no night picked yet'}
       ${m.ready_by ? ` · on the table by ${clock12(m.ready_by)}` : ''}${m.servings ? ` · for ${m.servings}` : ''}
       ${factor !== 1 ? ` · <b>×${fmtQty(factor)}</b>` : ''}${cook ? ` · ${esc(cook.name)} cooks` : ''}${anchorNote(m)}</p>
     ${home ? `<div class="homeline">${esc(MEAL.homeText({ ...home, n: home.derived }))}${m.headcount_override ? ` · set to ${m.headcount_override}` : ''}
       <span class="stepper"><button type="button" data-hc="-1" aria-label="fewer">−</button><b>${m.headcount_override ?? home.n}</b><button type="button" data-hc="1" aria-label="more">+</button></span></div>` : ''}
+    <h3>Which night <small>— a dot means that night is taken; it swaps into the tray</small></h3><div class="chips">${dayChips}</div>
     ${r ? `<h3>Need to buy <small>— tick what you don't have</small></h3><div class="hnlist">${rows}</div>
            <div class="actions"><button type="button" id="m-push" class="primary">Add checked to shopping list</button></div>` : ''}
     ${r ? `<h3>Cook <small>— the countdown goes to them</small></h3>${cookChips(cookId)}` : ''}
@@ -2359,6 +2499,12 @@ async function openMealSheet(id){
       const cb = b.closest('.hn').querySelector('input'); if (on) cb.checked = false;
     });
     body.querySelector('#m-unplan').onclick = () => { if (confirm('Un-plan this dinner? Un-bought items come off the list too.')) { MEAL.unplan(id); closeMSheet(); } };
+    body.querySelectorAll('[data-move]').forEach(c => c.onclick = async () => {
+      const d = c.dataset.move;
+      if ((d || null) === (m.plan_date || null)) return;
+      if (d) await MEAL.move(id, d); else await MEAL.unschedule(id);
+      openMealSheet(id);
+    });
     const rb = body.querySelector('#m-recipe'); if (rb) rb.onclick = () => openRecipeSheet(r.id);
     body.querySelectorAll('[data-hc]').forEach(b => b.onclick = async () => {
       const cur = m.headcount_override ?? home?.n ?? 4;

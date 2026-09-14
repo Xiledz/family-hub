@@ -494,5 +494,83 @@ eq('scoring: phrase beats word',   cats('peanut butter'), ['pantry']);
 eq('scoring: longer phrase wins',  cats('ranch seasoning mix'), ['condiments']);
 eq('scoring: tie keeps table order', cats('ground beef'), ['meat']);
 
+/* ---------------------------------------------------------------------------
+ * LEMONADE IS NOT A LEMON  (Erich: "Lemonade is not something we need to pick
+ * out. It's not produce.") Three roots, each a rule:
+ *   (a) every fruit and vegetable word ends at a word end, plurals spelled
+ *       out — "lemonade" is not a lemon, "pineapple" is not an apple;
+ *   (b) a compound is head-final: the LAST word decides the aisle, so
+ *       "grape juice" is a juice and "banana bread" is a bread (catOf scores
+ *       by how far a match reaches, not how long it is);
+ *   (c) a flavour word before a thing that takes one is one item (MODIFIERS
+ *       + HEADS in the splitter and in looksMerged), where "eggs bacon" and
+ *       "onion garlic" stay two.
+ * pick_yourself stays a property of the aisle (produce, meat, seafood,
+ * bakery, deli): a bag of potatoes is still chosen by hand.
+ * ------------------------------------------------------------------------- */
+const pick = s => P(s).items.map(i => `${i.name}[${i.category}${i.pickYourself ? ' PICK' : ''}]`);
+const FLAVOURED = [
+  ['lemonade',            ['lemonade[beverages]']],
+  ['limeade',             ['limeade[beverages]']],
+  ['orange juice',        ['orange juice[beverages]']],
+  ['apple juice',         ['apple juice[beverages]']],
+  ['grape juice',         ['grape juice[beverages]']],
+  ['butterscotch chips',  ['butterscotch chips[baking]']],
+  ['pineapple',           ['pineapple[produce PICK]']],
+  ['onion rings',         ['onion rings[frozen]']],
+  ['garlic bread',        ['garlic bread[bakery PICK]']],
+  ['banana bread',        ['banana bread[bakery PICK]']],
+  ['orange soda',         ['orange soda[beverages]']],
+  ['lemon pepper',        ['lemon pepper[baking]']],
+  ['strawberry jam',      ['strawberry jam[pantry]']],
+  ['celery salt',         ['celery salt[baking]']],
+  ['apple cider vinegar', ['apple cider vinegar[pantry]']],
+  ['strawberry ice cream',['strawberry ice cream[frozen]']],
+  ['sweet potato fries',  ['sweet potato fries[frozen]']],
+  ['honey mustard',       ['honey mustard[condiments]']],
+  ['oatmeal cookies',     ['oatmeal cookies[snacks]']],
+  ['chocolate milk',      ['chocolate milk[dairy]']],
+  ['peanut butter',       ['peanut butter[pantry]']],
+  ['cinnamon rolls',      ['cinnamon rolls[bakery PICK]']],
+  ['egg rolls',           ['egg rolls[frozen]']],
+  ['toilet paper rolls',  ['toilet paper rolls[paper]']],
+  ['trash bags',          ['trash bags[household]']],
+  /* must NOT change */
+  ['lemons',              ['lemons[produce PICK]']],
+  ['oranges',             ['oranges[produce PICK]']],
+  ['a lemon',             ['lemon[produce PICK]']],
+  ['tomatoes',            ['tomatoes[produce PICK]']],
+  ['potatoes',            ['potatoes[produce PICK]']],
+  ['strawberries',        ['strawberries[produce PICK]']],
+  ['green beans',         ['green beans[produce PICK]']],
+  ['bell pepper',         ['bell pepper[produce PICK]']],
+  ['apples',              ['apples[produce PICK]']],
+  ['eggs bacon',          ['eggs[eggs]', 'bacon[meat PICK]']],
+  ['onion garlic lettuce',['onion[produce PICK]', 'garlic[produce PICK]', 'lettuce[produce PICK]']],
+  ['milk eggs grape juice bananas', ['milk[dairy]', 'eggs[eggs]', 'grape juice[beverages]', 'bananas[produce PICK]']],
+  ['onion rings and grape juice',   ['onion rings[frozen]', 'grape juice[beverages]']],
+  ['2 lemons and a lime', ['lemons[produce PICK]', 'lime[produce PICK]']],
+  ['butter sticks',       ['butter sticks[dairy]']],
+  ['hot dog buns',        ['hot dog buns[bakery PICK]']],
+  ['tomato sauce',        ['tomato sauce[canned]']],
+  ['garlic powder',       ['garlic powder[baking]']],
+];
+for (const [t, want] of FLAVOURED) eq(`flavour: ${t}`, pick(t), want);
+eq('flavour: qty rides along', P('2 gallons of orange juice').items.map(i => i.qty), ['2 gallons']);
+/* looksMerged must not reject the compounds the splitter now makes, or the
+   catalog could never learn them. */
+import { isCompound } from './parse.js';
+eq('compound: grape juice is one thing',       looksMerged('grape juice'), false);
+eq('compound: apple cider vinegar is one',     isCompound('apple cider vinegar'), true);
+eq('compound: milk eggs still comes apart',    looksMerged('milk eggs'), true);
+eq('compound: onion garlic is not a compound', isCompound('onion garlic'), false);
+eq('compound: eggs bacon is not a compound',   isCompound('eggs bacon'), false);
+/* Word ends, both directions. */
+eq('word end: lemonade is not a lemon',  cats('lemonade'),  ['beverages']);
+eq('word end: lemons still are',          cats('lemons'),    ['produce']);
+eq('word end: butterscotch is not butter', cats('butterscotch'), ['baking']);
+eq('word end: buttermilk stays dairy',    cats('buttermilk'), ['dairy']);
+eq('word end: mangoes / cherries / peaches', [cats('mangoes'), cats('cherries'), cats('peaches')].flat(), ['produce', 'produce', 'produce']);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
