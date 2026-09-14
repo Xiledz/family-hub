@@ -1,0 +1,12 @@
+{
+  "name": "family-hub",
+  "private": true,
+  "description": "Erich's Family Hub \u2014 static PWA on GitHub Pages. No build step; this file only exists so the test suite can find jsdom.",
+  "scripts": {
+    "test": "for f in *.test.mjs; do echo \"== $f\"; node \"$f\" | tail -1 || exit 1; done"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.0"
+  },
+  "type": "module"
+}

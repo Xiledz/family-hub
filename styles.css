@@ -617,3 +617,7 @@ body.mode-kid,body.mode-display{overflow-y:auto}
   .wh1{font-size:30px}
 }
 @media (max-width:520px){ .wgrid{grid-template-columns:1fr} }
+
+/* A row that is on screen before the database has it (optimistic add). */
+.shop-row.pending,.todo.pending{opacity:.55}
+.shop-row.pending .tick,.todo.pending .tick{border-style:dashed}

@@ -28,7 +28,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-13a';
+const APP_BUILD = '2026-09-14a';
 
 /* ============================================================================
  * MODES — the kitchen iPad.
@@ -531,7 +531,30 @@ function absenceChips(day){
 
 /* ==========================================================================
  * RENDER
+ *
+ * A LIVE INPUT MUST SURVIVE A RE-RENDER. Every list tab used to rebuild the
+ * whole of #bento — add form included — after each add, so the box Jess was
+ * typing in was destroyed and a new one put in its place. Focus dies with
+ * the node, and on iOS the keyboard drops, which cost a tap per item.
+ * Re-focusing the new node after the await does not work either: Safari
+ * only opens the keyboard inside a user gesture, and the await has ended it.
+ *
+ * So each tab has a FRAME: the add form is created once, when the tab is
+ * entered, and never replaced. Data changes rewrite the slots around it
+ * (frame() + slot()). The original input node stays in the document,
+ * focused, through the whole add. The calendar views have no form inside
+ * #bento and keep rebuilding it whole.
  * ========================================================================*/
+function frame(key, skeleton){
+  const b = $('#bento');
+  if (b.dataset.frame === key) return false;
+  b.className = 'bento'; b.innerHTML = skeleton; b.dataset.frame = key;
+  return true;
+}
+const slot = (id, html) => { const el = $('#' + id); if (el) el.innerHTML = html; };
+/* The calendar rebuilds #bento outright; forget any frame it had. */
+function freshBento(){ const b = $('#bento'); delete b.dataset.frame; return b; }
+
 function render(){
   if (state.mode === 'kid')     return KID.render();
   if (state.mode === 'display') return WALL.render();
@@ -551,14 +574,14 @@ function render(){
 
   if (state.view !== 'today') {
     $('#qa').classList.add('hide');
-    $('#bento').className = 'calview';
+    freshBento().className = 'calview';
     $('#bento').innerHTML = state.view === 'month' ? renderMonth()
                           : state.view === 'week'  ? renderWeek()
                           : renderDay();
     bindCalendar();
     return;
   }
-  $('#bento').className = 'bento';
+  freshBento().className = 'bento';
   $('#qa').classList.remove('hide');
   const today = ymd(now);
   const todays = onDay(today);
@@ -900,8 +923,18 @@ const SHOP = {
       });
     }
     if (!rows.length) { toast('Already on the list'); return; }
+    /* Optimistic: the rows appear now, marked pending, so three items typed
+       in a row never wait on the network. A failed insert takes them back. */
+    const tmp = rows.map((r, i) => ({ ...r, id: `tmp-${Date.now()}-${i}`, got: false, pending: true }));
+    state.shopItems = [...state.shopItems, ...tmp];
+    render();
     const { error } = await state.db.from('shopping_items').insert(rows);
-    if (error) { console.error(error); toast('Could not save'); return; }
+    if (error) {
+      console.error(error);
+      state.shopItems = state.shopItems.filter(i => !tmp.includes(i));
+      render(); toast(`Could not save "${rows[0].name}" — try again`);
+      return;
+    }
     // remember what this family buys — same guard as the text number
     for (const it of p.items) {
       const seen = state.shopCatalog.find(c => c.name.toLowerCase() === it.name.toLowerCase());
@@ -1115,6 +1148,10 @@ function renderShopping(){
   }
   const rowHtml = (it, storeId) => {
     const aisle = SHOP.aisleOf(storeId, it.category);
+    /* A row still on its way to the database has no tick and no × yet. */
+    if (it.pending) return `<li class="shop-row pending" data-id="${it.id}"><span class="tick" aria-hidden="true"></span>
+      <span class="body"><span class="nm">${it.qty ? `<b>${esc(it.qty)}</b> ` : ''}${esc(it.name)}</span>
+      <span class="meta"><span class="aisle dim">saving…</span></span></span></li>`;
     return `<li class="shop-row${it.got ? ' got' : ''}" data-id="${it.id}">
       <button class="tick" data-tick="${it.id}" aria-label="${it.got ? 'Not got' : 'Got it'}">${it.got ? '&#10003;' : ''}</button>
       <span class="body">
@@ -1144,15 +1181,36 @@ function renderShopping(){
 
   const hasAisles = sel && state.shopAisles.some(a => a.store_id === sel);
 
-  $('#bento').innerHTML = `<div class="col">
+  /* The frame: chips and the ad hint above the form, everything else
+     below it. The form is built once and bound once (see RENDER). */
+  if (frame('shopping', `<div class="col">
     <section class="card">
-      <div class="chips">${chips}</div>
-      <div class="hint" style="margin:-4px 2px 8px"><button type="button" class="link" id="shop-ad">Paste a weekly ad</button>${state.catalogSales?.length || state.sales?.size ? ` · sales matched this week` : ''}</div>
+      <div id="shop-head"></div>
       <form id="shop-add" autocomplete="off">
         <input id="shop-in" placeholder='Add: "milk eggs 2 lbs ground beef"' enterkeyhint="done">
         <button type="submit">Add</button>
       </form>
-      ${recentChips}
+      <div id="shop-body"></div>
+    </section>
+  </div>`)) {
+    $('#shop-add').onsubmit = e => {
+      e.preventDefault();
+      const inp = $('#shop-in'); const v = inp.value.trim(); if (!v) return;
+      inp.value = '';                      // the node stays; only its text goes
+      SHOP.add(v);                         // not awaited: the box is free at once
+    };
+    /* A pasted weekly ad (three or more priced lines) opens the ad sheet
+       instead of becoming thirty shopping items. A plain list still adds. */
+    $('#shop-in').addEventListener('paste', e => {
+      const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+      if (!looksLikeAd(text)) return;
+      e.preventDefault();
+      openAdSheet(text);
+    });
+  }
+  slot('shop-head', `<div class="chips">${chips}</div>
+      <div class="hint" style="margin:-4px 2px 8px"><button type="button" class="link" id="shop-ad">Paste a weekly ad</button>${state.catalogSales?.length || state.sales?.size ? ` · sales matched this week` : ''}</div>`);
+  slot('shop-body', `${recentChips}
       ${need.length ? `<div class="ch" style="margin-top:12px">${need.length} to get${anyCount ? ` · ${anyCount} any store` : ''}${sel && !hasAisles ? ' · no aisle map for this store yet' : ''}</div>` : ''}
       ${need.length ? blocks.join('') : `<div class="soon" style="padding:26px 12px;margin-top:12px"><b>Nothing to get</b><span>Add something above, or text the family number.</span></div>`}
       ${got.length ? `<div class="ch" style="margin:14px 0 6px">Got · ${got.length}</div>
@@ -1161,24 +1219,13 @@ function renderShopping(){
       ${items.length ? `<div class="acts" style="margin-top:14px">
         <button type="button" id="shop-done" ${got.length ? '' : 'disabled'}>Done shopping</button>
         <button type="button" id="shop-clear" class="danger">Clear ${sel ? esc(storeName(sel)) : 'everything'}</button>
-      </div>` : ''}
-    </section>
-  </div>`;
+      </div>` : ''}`);
 
   $$('#bento [data-store]').forEach(b => b.onclick = () => { state.shopStore = b.dataset.store || null; render(); });
-  $('#shop-add').onsubmit = async e => { e.preventDefault(); const v = $('#shop-in').value.trim(); if (!v) return; $('#shop-in').value = ''; await SHOP.add(v); };
   $$('#bento [data-tick]').forEach(b => b.onclick = () => SHOP.toggle(b.dataset.tick));
   $$('#bento [data-recent]').forEach(b => b.onclick = () => SHOP.add(b.dataset.recent));
   $$('#bento [data-sale-add]').forEach(b => b.onclick = () => SHOP.add(b.dataset.saleAdd));
   $('#shop-ad').onclick = () => openAdSheet('');
-  /* A pasted weekly ad (three or more priced lines) opens the ad sheet
-     instead of becoming thirty shopping items. A plain list still adds. */
-  $('#shop-in').addEventListener('paste', e => {
-    const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
-    if (!looksLikeAd(text)) return;
-    e.preventDefault();
-    openAdSheet(text);
-  });
   $$('#bento [data-x]').forEach(b => b.onclick = () => SHOP.remove(b.dataset.x));
   const done = $('#shop-done'); if (done) done.onclick = () => SHOP.clear(sel, true);
   const clr = $('#shop-clear'); if (clr) clr.onclick = () => {
@@ -1321,8 +1368,16 @@ const TODO = {
       source: 'web', created_by: state.me?.id || null
     }));
 
+    const tmp = rows.map((r, i) => ({ ...r, id: `tmp-${Date.now()}-${i}`, completed_at: null, pending: true }));
+    state.todos = [...(state.todos || []), ...tmp];
+    render();                                                // optimistic
     const { error } = await state.db.from('todos').insert(rows);
-    if (error) { console.error(error); toast('Could not save'); return; }
+    if (error) {
+      console.error(error);
+      state.todos = (state.todos || []).filter(t => !tmp.includes(t));
+      render(); toast(`Could not save "${p.title}" — try again`);
+      return;
+    }
     await TODO.load(); render();
   },
 
@@ -1437,7 +1492,9 @@ function renderTodos(){
      occurrence came due while it was still open. It sits in Done with a red
      badge instead of a tick, so a missed week is visible and "Clear done"
      sweeps it like anything else. */
-  const item = t => `
+  const item = t => t.pending ? `
+    <li class="todo pending" data-id="${t.id}"><span class="grip" aria-hidden="true"></span><span class="tick" aria-hidden="true"></span>
+      <span class="tt">${esc(t.title)} <span class="tbadge">saving…</span></span></li>` : `
     <li class="todo${t.completed_at ? ' done' : ''}" data-id="${t.id}">
       <span class="grip" data-grip aria-hidden="true">⋮⋮</span>
       <button class="tick" data-tick="${t.id}" aria-label="Done">${t.completed_at ? (t.missed_at ? '✕' : '✓') : ''}</button>
@@ -1448,34 +1505,37 @@ function renderTodos(){
       <button class="tx" data-del="${t.id}" aria-label="Remove">×</button>
     </li>`;
 
-  $('#bento').innerHTML = `
+  if (frame('todos', `
     <div class="col">
       <section class="card">
-        <div class="pchips">${chips}</div>
+        <div id="todo-head"></div>
         <form id="tadd" class="tadd">
           <input id="tin" placeholder="Something that needs doing…" autocomplete="off">
           <button>Add</button>
         </form>
-        ${open.length
+        <div id="todo-body"></div>
+      </section>
+    </div>`)) {
+    $('#tadd').onsubmit = e => {
+      e.preventDefault();
+      const inp = $('#tin'); const v = inp.value.trim(); if (!v) return;
+      inp.value = ''; TODO.add(v);
+    };
+  }
+  slot('todo-head', `<div class="pchips">${chips}</div>`);
+  slot('todo-body', `${open.length
           ? `<ul class="todos" id="tlist">${open.map(item).join('')}</ul>
              <p class="hint">Hold the ⋮⋮ handle to drag. Order is the priority.</p>`
           : `<p class="hint" style="padding:18px 2px">Nothing on this list.</p>`}
         ${done.length
           ? `<div class="tdone"><b>Done</b>
                <button class="link" id="tclear">Clear done</button></div>
-             <ul class="todos">${done.map(item).join('')}</ul>` : ''}
-      </section>
-    </div>`;
+             <ul class="todos">${done.map(item).join('')}</ul>` : ''}`);
 
   $$('[data-who]').forEach(b => b.onclick = () => {
     state.todoWho = b.dataset.who === 'house' ? 'house' : b.dataset.who;
     render();
   });
-  $('#tadd').onsubmit = e => {
-    e.preventDefault();
-    const v = $('#tin').value.trim(); if (!v) return;
-    $('#tin').value = ''; TODO.add(v);
-  };
   $$('[data-tick]').forEach(b => b.onclick = () => TODO.toggle(b.dataset.tick));
   $$('[data-del]').forEach(b => b.onclick = () => TODO.remove(b.dataset.del));
   if ($('#tclear')) $('#tclear').onclick = () => TODO.clearDone();
@@ -1952,23 +2012,31 @@ function renderMeals(){
       <span class="rmeta">${r.servings ? `serves ${r.servings} · ` : ''}${r.cook_minutes} min${r.recipe_steps?.length ? ' · countdown' : ''}</span>
     </button>`;
 
-  $('#bento').innerHTML = `
+  if (frame('meals', `
     <div class="col">
+      <section class="card" id="meal-week"></section>
       <section class="card">
-        <div class="ch"><span>This week</span>
-          <span><button class="link" data-wk="-7">‹</button> <button class="link" data-wk="0">today</button> <button class="link" data-wk="7">›</button></span></div>
-        ${days.map(dayRow).join('')}
-      </section>
-      <section class="card">
-        <div class="ch"><span>Recipes</span><b>${state.recipes.length}</b></div>
+        <div id="meal-rhead"></div>
         <form id="radd" class="tadd">
           <input id="rin" placeholder="Paste a recipe link, or type a name…" autocomplete="off">
           <button>Add</button>
         </form>
-        <p class="hint">Pinterest: Share → <b>Copy link</b>, paste it here. Any recipe site works too. Family recipes: type the name, then paste the ingredients.</p>
-        ${state.recipes.length ? `<div class="rgrid">${state.recipes.map(card).join('')}</div>` : ''}
+        <div id="meal-rbody"></div>
       </section>
-    </div>`;
+    </div>`)) {
+    $('#radd').onsubmit = e => {
+      e.preventDefault();
+      const inp = $('#rin'); const v = inp.value.trim(); if (!v) return;
+      inp.value = '';
+      startImport(v);
+    };
+  }
+  slot('meal-week', `<div class="ch"><span>This week</span>
+          <span><button class="link" data-wk="-7">‹</button> <button class="link" data-wk="0">today</button> <button class="link" data-wk="7">›</button></span></div>
+        ${days.map(dayRow).join('')}`);
+  slot('meal-rhead', `<div class="ch"><span>Recipes</span><b>${state.recipes.length}</b></div>`);
+  slot('meal-rbody', `<p class="hint">Pinterest: Share → <b>Copy link</b>, paste it here. Any recipe site works too. Family recipes: type the name, then paste the ingredients.</p>
+        ${state.recipes.length ? `<div class="rgrid">${state.recipes.map(card).join('')}</div>` : ''}`);
 
   $$('[data-wk]').forEach(b => b.onclick = () => {
     if (b.dataset.wk === '0') { state.mealWeek = null; }
@@ -1981,12 +2049,6 @@ function renderMeals(){
     const m = state.meals.find(x => x.id === b.dataset.mealtick); MEAL.setMealDone(m.id, !m.done_at);
   });
   $$('[data-recipe]').forEach(b => b.onclick = () => openRecipeSheet(b.dataset.recipe));
-  $('#radd').onsubmit = async e => {
-    e.preventDefault();
-    const v = $('#rin').value.trim(); if (!v) return;
-    $('#rin').value = '';
-    await startImport(v);
-  };
 }
 
 const clock12 = t => { const [h, m] = String(t).split(':').map(Number);
@@ -2334,7 +2396,7 @@ function renderPlaceholder(){
     money:['Money','Household accounts and spending. This is the one module that will NOT be visible to everyone — it sits behind a per-person login, which is why every member already has a role.']
   }[state.module];
   $('#qa').classList.add('hide');
-  $('#bento').innerHTML = `<div class="col"><section class="card soon" style="padding:38px 22px">
+  freshBento().innerHTML = `<div class="col"><section class="card soon" style="padding:38px 22px">
     <b style="font-size:16px">${copy[0]}</b><span style="display:block;max-width:44ch;margin:8px auto 0">${copy[1]}</span>
   </section></div>`;
 }
