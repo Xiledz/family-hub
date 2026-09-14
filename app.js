@@ -28,7 +28,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-14b';
+const APP_BUILD = '2026-09-14c';
 
 /* ============================================================================
  * MODES — the kitchen iPad.
@@ -1073,35 +1073,6 @@ const SHOP = {
   },
   aisleOf(storeId, category){
     return state.shopAisles.find(a => a.store_id === storeId && a.category === category)?.aisle || null;
-  },
-
-  /* THE MAP BUILDS ITSELF WHILE THEY SHOP. Only HEB on 1488 was ever seeded
-     (011); Kroger and the others had no rows at all, so every row showed a
-     grey category name and looked broken. Now a tap on that chip, with a
-     store chip selected, takes the aisle for that category AT THAT STORE and
-     it applies to everything in the category from then on. One walk through
-     Kroger and the map exists. A leading number orders the walk; "back
-     wall" or "front left" is fine too and keeps the category's default
-     order. Blank clears it. */
-  async setAisle(storeId, category, text){
-    const aisle = String(text || '').trim();
-    if (!storeId || !category) return;
-    if (!aisle) {
-      await state.db.from('store_aisles').delete().eq('store_id', storeId).eq('category', category);
-      state.shopAisles = state.shopAisles.filter(a => !(a.store_id === storeId && a.category === category));
-      return;
-    }
-    const num = aisle.match(/^\s*(\d+)/);
-    const prev = state.shopAisles.find(a => a.store_id === storeId && a.category === category);
-    const catDefault = 100 + (state.shopCats.find(c => c.name === category)?.sort_order ?? 999);
-    const row = { store_id: storeId, category, aisle,
-                  sort_order: num ? +num[1] : (prev?.sort_order ?? catDefault),
-                  verified_at: new Date().toISOString(), verified_by: state.me?.id || null };
-    const { error } = await state.db.from('store_aisles').upsert(row, { onConflict: 'store_id,category' });
-    if (error) { console.error(error); toast('Could not save the aisle'); return; }
-    if (prev) Object.assign(prev, row); else state.shopAisles.push(row);
-    const store = state.stores.find(s => s.id === storeId)?.name || 'this store';
-    toast(`${category}: aisle ${aisle} at ${store}`);
   }
 };
 
@@ -1217,9 +1188,7 @@ function renderShopping(){
       <button class="tick" data-tick="${it.id}" aria-label="${it.got ? 'Not got' : 'Got it'}">${it.got ? '&#10003;' : ''}</button>
       <span class="body">
         <span class="nm">${it.qty ? `<b>${esc(it.qty)}</b> ` : ''}${esc(it.name)}${it.note ? ` <i>(${esc(it.note)})</i>` : ''}</span>
-        <span class="meta">${sel && !it.got
-          ? `<button type="button" class="aisle${aisle ? '' : ' dim'} edit" data-aisle-edit="${esc(it.category)}" title="Set the aisle for ${esc(it.category)} at ${esc(storeName(sel))}">${aisle ? `Aisle ${esc(aisle)}` : `${esc(it.category)} · aisle?`}</button>`
-          : aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}${saleTag(it)}</span>
+        <span class="meta">${aisle ? `<span class="aisle">Aisle ${esc(aisle)}</span>` : `<span class="aisle dim">${esc(it.category)}</span>`}${it.pick_yourself ? '<span class="pick">pick out</span>' : ''}${saleTag(it)}</span>
       </span>
       <button class="x" data-x="${it.id}" aria-label="Remove">&times;</button>
     </li>`;
@@ -1290,21 +1259,6 @@ function renderShopping(){
   $$('#bento [data-sale-add]').forEach(b => b.onclick = () => SHOP.add(b.dataset.saleAdd));
   $('#shop-ad').onclick = () => openAdSheet('');
   $$('#bento [data-x]').forEach(b => b.onclick = () => SHOP.remove(b.dataset.x));
-  /* Tap the aisle chip → a one-line editor in its place, per store. Built
-     inside the tap, so the keyboard opens on the phone. */
-  $$('#bento [data-aisle-edit]').forEach(b => b.onclick = () => {
-    const category = b.dataset.aisleEdit;
-    const cur = SHOP.aisleOf(sel, category) || '';
-    const f = document.createElement('form');
-    f.className = 'aisle-edit'; f.autocomplete = 'off';
-    f.innerHTML = `<label>${esc(category)} at ${esc(storeName(sel))}</label>
-      <input placeholder="Aisle number, or “back wall”" value="${esc(cur)}" enterkeyhint="done">
-      <button type="submit">Save</button><button type="button" class="plain" data-cancel>Cancel</button>`;
-    b.replaceWith(f);
-    const inp = f.querySelector('input'); inp.focus(); inp.select();
-    f.querySelector('[data-cancel]').onclick = () => render();
-    f.onsubmit = async e => { e.preventDefault(); await SHOP.setAisle(sel, category, inp.value); render(); };
-  });
   const done = $('#shop-done'); if (done) done.onclick = () => SHOP.clear(sel, true);
   const clr = $('#shop-clear'); if (clr) clr.onclick = () => {
     /* One confirmation, naming what is about to go. Recoverable either way,

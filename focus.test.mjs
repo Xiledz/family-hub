@@ -164,24 +164,11 @@ try {
     globalThis.__db.from = realInsert;
   }
 
-  /* --- the aisle map builds itself: tap the chip, type the aisle, per store */
+  /* --- categories on the list: lemonade is a beverage (parse.js, not produce) */
   {
     typeEnter($('#shop-in'), 'lemonade, apples, lemons'); await tick(120);
-    ok('aisle: lemonade is a beverage, not produce', $$('.shop-row').some(r => r.textContent.includes('lemonade') && r.textContent.includes('beverages') && !r.textContent.includes('pick out')));
-    ok('aisle: no editor without a store chip', $$('[data-aisle-edit]').length === 0);
-    $('#bento [data-store="kr"]').click(); await tick(30);
-    const chip = $$('[data-aisle-edit="produce"]')[0];
-    ok('aisle: produce chip offers to set the aisle at Kroger', !!chip && chip.textContent.includes('aisle?') && chip.title.includes('Kroger'));
-    chip.click();
-    const f = $('.aisle-edit'); ok('aisle: inline editor appears in the row, naming the store', !!f && f.textContent.includes('produce at Kroger'));
-    ok('aisle: editor input is focused (inside the tap)', w.document.activeElement === f.querySelector('input'));
-    f.querySelector('input').value = '2 front left'; f.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })); await tick(60);
-    ok('aisle: saved to store_aisles for Kroger/produce', tables.store_aisles.some(a => a.store_id === 'kr' && a.category === 'produce' && a.aisle === '2 front left' && a.sort_order === 2));
-    ok('aisle: every produce row now shows it', $$('.shop-row').filter(r => /apples|lemons/.test(r.textContent)).every(r => r.textContent.includes('Aisle 2 front left')));
-    ok('aisle: the beverage row still has none', $$('.shop-row').find(r => r.textContent.includes('lemonade'))?.textContent.includes('aisle?'));
-    ok('aisle: box still the same node after all that', $('#shop-in') === $('#shop-in') && $('#shop-in').isConnected);
-    $('#bento [data-store=""]').click(); await tick(30);
-    ok('aisle: on the All chip nothing is editable (aisles are per store)', $$('[data-aisle-edit]').length === 0);
+    ok('list: lemonade is a beverage, not produce, not pick-out', $$('.shop-row').some(r => r.textContent.includes('lemonade') && r.textContent.includes('beverages') && !r.textContent.includes('pick out')));
+    ok('list: lemons are still produce', $$('.shop-row').some(r => r.textContent.includes('lemons') && r.textContent.includes('produce')));
   }
 
   /* --- todos --------------------------------------------------------------- */

@@ -622,17 +622,6 @@ body.mode-kid,body.mode-display{overflow-y:auto}
 .shop-row.pending,.todo.pending{opacity:.55}
 .shop-row.pending .tick,.todo.pending .tick{border-style:dashed}
 
-/* The aisle chip is a button when a store is selected: tap to set it. */
-.shop-row button.aisle.edit{font:inherit;font-size:inherit;border:1px dashed var(--ink3);background:transparent;
-  border-radius:99px;padding:1px 8px;cursor:pointer;color:inherit}
-.shop-row button.aisle.edit.dim{color:var(--ink3)}
-.aisle-edit{display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%;margin-top:4px}
-.aisle-edit label{width:100%;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3)}
-.aisle-edit input{flex:1;min-width:120px;padding:8px 10px;border-radius:10px;border:1.5px solid var(--line);
-  background:var(--card);color:var(--ink);font:inherit;font-size:14px}
-.aisle-edit button{padding:8px 12px;border-radius:10px;border:0;background:var(--accent);color:var(--bg);font:inherit;font-weight:600}
-.aisle-edit button.plain{background:var(--soft);color:var(--ink2)}
-
 /* A meal in the week's tray (no night yet). */
 .mday.tray .mdate{color:var(--ink3);font-style:italic}
 .mday.tray .mplan{flex:0 0 auto;margin-left:auto}
