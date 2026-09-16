@@ -5,7 +5,7 @@
 import { CONFIG, isDemo } from './config.js';
 import { parseQuickAdd, describe, parseShopping, parseTodo, parseIngredient, splitIngredientBlock,
          parseSeason, looksLikeSeason, splitSeasonLines, parseAd, looksLikeAd,
-         roleVerb, castLine, toggleCastRole, FORM_WORDS, isFormOnly } from './parse.js';
+         roleVerb, castLine, toggleCastRole, FORM_WORDS, isFormOnly, isQualifierOnly, cleanName } from './parse.js';
 import { expand, describeRepeat, ymd as rymd, parseYmd } from './recur.js';
 import { choreStreak, streakLine } from './streak.js';
 
@@ -28,7 +28,7 @@ const LEADS = [
   {v:1440,  l:'1 day'},  {v:2880,l:'2 days'}
 ];
 
-const APP_BUILD = '2026-09-14c';
+const APP_BUILD = '2026-09-15b';
 
 /* ============================================================================
  * MODES — the kitchen iPad.
@@ -868,7 +868,7 @@ const SHOP = {
     /* Shape-only AND classifies as nothing: "sticks", "slices", "cubes". A
        shape word that is also a real aisle word ("rolls" — bakery, "bag" —
        household) could be something someone meant, and is left alone. */
-    const junk = n => isFormOnly(n) && parseShopping(n, { stores: [], catalog: [] }).items.every(i => i.category === 'other');
+    const junk = n => (isFormOnly(n) || isQualifierOnly(n)) && parseShopping(n, { stores: [], catalog: [] }).items.every(i => i.category === 'other');
     const badCat = state.shopCatalog.filter(c => junk(c.name)).map(c => c.name);
     const badItems = state.shopItems.filter(i => !i.got && junk(i.name));
     /* Re-file what the parser now classifies differently. The catalog's
@@ -876,6 +876,36 @@ const SHOP = {
        aisle editor writes store_aisles), and the catalog's memory wins over
        the rules, so a "lemonade → produce" learned last month would have
        outlived the fix forever. Unbought rows follow their catalog entry. */
+    /* Names with stray punctuation ("crescent rolls )") or nothing but
+       punctuation: renamed to the clean name, or removed when nothing is
+       left. Catalog first; a clean twin already there wins and the dirty
+       row goes. Every item still on the list (bought or not) follows. */
+    const tidy = [];
+    for (const c of [...state.shopCatalog]) {
+      const clean = cleanName(c.name);
+      if (clean === c.name) continue;
+      if (!clean || state.shopCatalog.some(x => x !== c && x.name === clean)) {
+        await state.db.from('shopping_catalog').delete().eq('id', c.id);
+        state.shopCatalog = state.shopCatalog.filter(x => x !== c);
+        tidy.push(`catalog "${c.name}" → removed`);
+      } else {
+        await state.db.from('shopping_catalog').update({ name: clean }).eq('id', c.id);
+        tidy.push(`catalog "${c.name}" → "${clean}"`); c.name = clean;
+      }
+    }
+    for (const i of [...state.shopItems]) {
+      const clean = cleanName(i.name);
+      if (clean === i.name) continue;
+      if (!clean) {
+        await state.db.from('shopping_items').delete().eq('id', i.id);
+        state.shopItems = state.shopItems.filter(x => x !== i);
+        tidy.push(`item "${i.name}" → removed`);
+      } else {
+        await state.db.from('shopping_items').update({ name: clean }).eq('id', i.id);
+        tidy.push(`item "${i.name}" → "${clean}"`); i.name = clean;
+      }
+    }
+    if (tidy.length) console.info('catalog repair: tidied', tidy);
     const refile = [];
     for (const c of state.shopCatalog) {
       const now = parseShopping(c.name, { stores: [], catalog: [] }).items;
@@ -970,7 +1000,7 @@ const SHOP = {
     // remember what this family buys — same guard as the text number
     for (const it of p.items) {
       const seen = state.shopCatalog.find(c => c.name.toLowerCase() === it.name.toLowerCase());
-      if (seen || isFormOnly(it.name)) continue;      // never learn "sticks"
+      if (seen || isFormOnly(it.name) || isQualifierOnly(it.name)) continue;      // never learn "sticks" or "gluten free"
       await state.db.from('shopping_catalog').insert({
         household_id: CONFIG.HOUSEHOLD_ID, name: it.name, category: it.category,
         store_id: it.store?.id ?? null

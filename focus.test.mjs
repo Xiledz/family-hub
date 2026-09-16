@@ -169,6 +169,9 @@ try {
     typeEnter($('#shop-in'), 'lemonade, apples, lemons'); await tick(120);
     ok('list: lemonade is a beverage, not produce, not pick-out', $$('.shop-row').some(r => r.textContent.includes('lemonade') && r.textContent.includes('beverages') && !r.textContent.includes('pick out')));
     ok('list: lemons are still produce', $$('.shop-row').some(r => r.textContent.includes('lemons') && r.textContent.includes('produce')));
+    typeEnter($('#shop-in'), 'gluten free noodles'); await tick(120);
+    ok('list: gluten free noodles is one row', $$('.shop-row').filter(r => /gluten|noodles/.test(r.textContent)).length === 1);
+    ok('list: the catalog did not learn "gluten free"', !tables.shopping_catalog.some(c => c.name === 'gluten free'));
   }
 
   /* --- todos --------------------------------------------------------------- */

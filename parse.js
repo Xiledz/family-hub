@@ -657,7 +657,7 @@ const CATEGORY_WORDS = [
   [/\b(?:deli|lunch\s*meat|sandwich\s*meat|turkey\s*slices|salami|prosciutto|rotisserie)/i, 'deli'],
   [/\b(?:beef|steak|ground\s*(?:beef|turkey|chuck)|chicken|thigh|drumstick|pork|bacon|sausage|ham|brisket|ribs|meat|hot\s*dog)/i, 'meat'],
   [/\b(?:fish|salmon|tilapia|shrimp|crab|lobster|tuna\s*steak|seafood|cod)/i, 'seafood'],
-  [/\b(?:milk|cheese|yogurt|butter|cream|sour\s*cream|cottage|half\s*and\s*half|creamer)/i, 'dairy'],
+  [/\b(?:milk|cheese|cheddar|mozzarella|parmesan|provolone|gouda|brie|feta|monterey\s*jack|pepper\s*jack|colby|yogurt|butter|cream|sour\s*cream|cottage|half\s*and\s*half|creamer)/i, 'dairy'],
   [/\b(?:egg|eggs)\b/i, 'eggs'],
   [/\b(?:frozen|ice\s*cream|popsicles?|freezer|waffles?|onion\s*rings?|french\s*fries|fries|tater\s*tots|pizza\s*rolls|egg\s*rolls?|pizzas?)\b/i, 'frozen'],
   [/\b(?:cereal|oatmeal|oats|granola|pancake|syrup|pop\s*tart)/i, 'breakfast'],
@@ -697,6 +697,7 @@ const KNOWN_ITEMS = [
   'baby carrots','romaine lettuce','iceberg lettuce','spring mix','cherry tomatoes',
   'grape tomatoes','russet potatoes','red onion','red onions','yellow onion','yellow onions',
   'green beans','brussels sprouts','snap peas','baby spinach','pineapple','pineapples',
+  'cheddar cheese','sharp cheddar','mozzarella cheese','parmesan cheese','pepper jack cheese','string cheese','shredded cheese',
   // flavoured things that are NOT the fruit (see MODIFIERS / HEADS below)
   'lemonade','limeade','orange juice','apple juice','grape juice','cranberry juice',
   'garlic bread','banana bread','onion rings','french fries','sweet potato fries','tater tots',
@@ -1075,6 +1076,42 @@ const isHead = t => HEADS.has(t) || HEADS.has(t.replace(/s$/, ''));
 /* "grape juice", "apple cider vinegar": a flavour, an optional bridge word,
    a head. Used by the splitter and by looksMerged, so what one joins the
    other will let the catalog learn. */
+/* A QUALIFIER IS NOT A THING.
+ *
+ * "gluten free noodles", "sugar free jello", "boneless skinless chicken
+ * breast": words that describe the item after them. Two rules, one idea:
+ *   1. any run of words the lexicon cannot place, standing directly in
+ *      front of something it can, is a description of that thing and joins
+ *      it — however many words it is ("extra virgin", "boneless skinless").
+ *      The old rule allowed exactly one word, which is why "organic milk"
+ *      worked and "gluten free milk" did not (and "gluten-free milk" did:
+ *      one token).
+ *   2. a qualifier that happens to CONTAIN a grocery word ("sugar free",
+ *      "no sugar added", "whole wheat") would otherwise close a chunk on
+ *      that word and orphan the rest ("free jello"). These are named here
+ *      and skipped over at the start of a chunk, whatever they contain.
+ * The cost, accepted on purpose: an unknown product typed straight before
+ * a known one with no comma ("kombucha milk") becomes one row. One tap
+ * fixes that; two plausible rows neither of which is real does not. */
+export const QUALIFIERS = new Set([
+  'sugar free','sugar-free','no sugar added','no salt added','salt free','low sodium','reduced sodium',
+  'fat free','fat-free','low fat','low-fat','reduced fat','nonfat','non fat','non-fat','skim','whole',
+  'gluten free','gluten-free','dairy free','dairy-free','lactose free','lactose-free','nut free','egg free',
+  'cage free','cage-free','free range','free-range','grass fed','grass-fed','pasture raised','wild caught','farm raised',
+  'boneless','skinless','boneless skinless','bone in','bone-in','thin sliced','thick cut','thick sliced','lean','extra lean',
+  'extra virgin','virgin','unsweetened','sweetened','unsalted','salted','heavy','light','lite','diet','zero sugar','caffeine free','decaf',
+  'whole wheat','whole grain','multigrain','multi grain','white','brown','sharp','mild','extra sharp',
+  'organic','fresh','frozen','canned','dried','large','extra large','jumbo','small','medium','family size','value pack','bulk'
+]);
+const qualAt = toks => (k) => {
+  for (let n = Math.min(3, toks.length - k); n >= 1; n--) {
+    if (QUALIFIERS.has(toks.slice(k, k + n).map(normTok).join(' '))) return n;
+  }
+  return 0;
+};
+/* "gluten free" on its own: not something to buy, never to learn. */
+export const isQualifierOnly = name => QUALIFIERS.has(String(name || '').toLowerCase().replace(/\s+/g, ' ').trim());
+
 export function isCompound(phrase) {
   const toks = String(phrase).toLowerCase().split(/\s+/).filter(Boolean);
   if (toks.length < 2 || toks.length > 3) return false;
@@ -1120,7 +1157,7 @@ function buildKnown(catalog) {
   for (const c of (catalog || [])) {
     if (!c || !c.name) continue;
     const n = String(c.name).toLowerCase();
-    if (isFormOnly(n)) continue;                 // "sticks" is not a thing this house buys
+    if (isFormOnly(n) || isQualifierOnly(n)) continue;   // "sticks", "gluten free": not things this house buys
     if (!looksMerged(n)) learned.add(n);
   }
   return { builtin: BUILTIN, learned };
@@ -1155,6 +1192,7 @@ const isNoise = t => CONNECTOR.test(t) || VERB_NOISE.test(t);
 function splitRun(part, knownSet) {
   const toks = part.split(/\s+/).filter(Boolean);
   const MAX = 5;
+  const qualAtTok = qualAt(toks);
 
   const phraseAt = (k, n) => normTok(toks.slice(k, k + n).join(' '));
   const knownAt = k => {
@@ -1223,6 +1261,9 @@ function splitRun(part, knownSet) {
     const q = qtyLen(i);
     if (q) i += q;
     if (toks[i] && /^of$/i.test(toks[i])) i++;
+    /* Qualifiers first, whatever they contain: "sugar free" must not close
+       a chunk on "sugar". Only when something follows them. */
+    for (let ql; (ql = qualAtTok(i)) && i + ql < toks.length && !isNoise(toks[i + ql]);) i += ql;
 
     const k = knownAt(i);
     if (k) {
@@ -1276,9 +1317,12 @@ function splitRun(part, knownSet) {
          item: "coconut oil", "fresh basil", "organic milk", "sweet corn". The
          run used to stop dead at the known word and file "coconut" as a
          thing to buy. A brand or a known PHRASE still starts its own item. */
-      if (i - start === 1 && i < toks.length && knownAt(i) === 1 && !brandAt(i)
-          && !qtyLen(i) && !isNoise(toks[i])) {
-        i++;
+      /* Any number of unplaceable words in front of any known item (a
+         phrase too): "gluten free noodles", "boneless skinless chicken
+         breast", "dairy free ice cream". A brand still starts its own item. */
+      const kn = i < toks.length ? knownAt(i) : 0;
+      if (i - start >= 1 && i - start <= 4 && kn && !brandAt(i) && !qtyLen(i) && !isNoise(toks[i])) {
+        i += kn;
         for (let f = 0; f < 2 && formAt(i); f++) i++;
       }
     }
@@ -1338,6 +1382,14 @@ function storeSections(text, stores) {
  * @param {Array}  opts.stores   [{ id, name }] — matched by name, loosely
  * @param {Array}  opts.catalog  [{ name, category, store_id }] previously bought
  */
+/* Stray punctuation off both ends, one case, one space. "crescent rolls )"
+   was saved with the bracket; a name that is nothing but punctuation
+   comes back empty. Used before a name is saved or learned, and by the
+   app's repair sweep on what was saved before this existed. */
+export const cleanName = name => String(name || '')
+  .replace(/^[\s()\[\]{}.,;:!?\-–—"]+/, '').replace(/[\s()\[\]{}.,;:!?\-–—"]+$/, '')
+  .replace(/\s+/g, ' ').trim().toLowerCase();
+
 export function parseShopping(input, opts = {}) {
   const out = { store: null, items: [], corrections: [], warnings: [] };
   let raw = String(input || '').trim();
@@ -1402,14 +1454,21 @@ export function parseShopping(input, opts = {}) {
       return r;
     }).join(' ');
 
-    const parts = body.split(/\s*[;\n]+\s*|\s*,\s*/).map(x => x.trim()).filter(Boolean);
+    /* A closed note in the middle ends its item: "milk (whole) eggs". */
+    const parts = body.split(/\s*[;\n]+\s*|\s*,\s*|(?<=\))\s+(?=\S)/).map(x => x.trim()).filter(Boolean);
+    let carry = null;                                    // "(whole) milk": a note ahead of its item
     for (const part of parts) {
       /* A note is pulled off the WHOLE segment before it is split, or the
          splitter turns "milk (whole)" into two items, one being "(whole)".
          It belongs to the last item named in that segment. */
       let text = part, note = null;
-      const nm = text.match(/\s*\((.+?)\)\s*$/) || text.match(/\s+\bfor\s+(.+)$/i);
+      /* The close bracket is optional: "cheese (shredded" — a phone
+         keyboard, a half-deleted edit — is the same note as "cheese
+         (shredded)", not an item called "(shredded". */
+      const nm = text.match(/\s*\(([^()]+?)\)?\s*$/) || text.match(/\s+\bfor\s+(.+)$/i);
       if (nm) { note = nm[1].trim(); text = text.slice(0, nm.index).trim(); }
+      if (carry) { note = note ? `${carry}; ${note}` : carry; carry = null; }
+      if (!text) { carry = note; continue; }             // nothing but a note: it is for what follows
 
       const chunks = splitRun(text, knownSet);
       chunks.forEach((chunk, idx) => {
@@ -1432,7 +1491,8 @@ export function parseShopping(input, opts = {}) {
         /* One case, always. A phone capitalises the first word of a text, so
            "Milk" and "milk" arrive as different strings and become two rows
            in the catalog that never learn from each other. */
-        name = name.replace(/^(?:a|an)\s+/i, '').replace(/[.!]+$/, '').trim().toLowerCase();
+        name = cleanName(name.replace(/^(?:a|an)\s+/i, ''));
+        /* A lone bracket or a run of punctuation is never a thing to buy. */
         if (!name) return;
         /* "cup", "sticks", "gallon of" — a measure with nothing measured is
            not a thing to buy. Dropped, and said so. */
@@ -2582,8 +2642,28 @@ function adNameKey(name, opts) {
   const exact = items.find(i => cat.some(c => c.name.toLowerCase() === i.name.toLowerCase()));
   if (exact) return exact.name.toLowerCase();
   const known = items.filter(i => i.category !== 'other').sort((a, b) => b.name.length - a.name.length)[0];
-  if (known) return known.name.toLowerCase();
+  /* The item without its brand and qualifiers: "H-E-B Whole Milk" keys to
+     "whole milk", "Kroger Large Grade A Eggs" to "eggs" — the words a list
+     row would carry. (The splitter now keeps qualifiers on the item, which
+     is right for the list and wrong for a match key.) */
+  if (known) return coreOf(known.name).toLowerCase();
   return base.toLowerCase().replace(/[^a-z0-9 &'-]/g, '').trim();
+}
+
+/* The thing itself, without what describes it: the longest known phrase
+   (or first known word) and everything after it. */
+export function coreOf(name) {
+  const toks = String(name || '').toLowerCase().split(/\s+/).filter(Boolean);
+  /* A brand that leads its product IS the name ("blue bell ice cream"). */
+  for (let n = Math.min(3, toks.length - 1); n >= 1; n--) if (BRAND_SET.has(toks.slice(0, n).join(' '))) return toks.join(' ');
+  for (let j = 0; j < toks.length; j++) {
+    for (let n = Math.min(5, toks.length - j); n >= 2; n--) {
+      if (BUILTIN.has(toks.slice(j, j + n).join(' ')) && !BRAND_SET.has(toks.slice(j, j + n).join(' '))) return toks.slice(j).join(' ');
+    }
+    if (QUALIFIERS.has(toks[j])) continue;
+    if (knownWord(toks[j]) && !BRAND_SET.has(toks[j])) return toks.slice(j).join(' ');
+  }
+  return toks.join(' ');
 }
 
 /* opts: { stores, catalog, now } */

@@ -73,7 +73,14 @@ eq('notes survive a run-on',
    takes one tap to fix; a wrongly split one leaves two half-items that both
    look real and neither is. */
 eq('unknown words stay together', names('buy flux capacitor'), ['flux capacitor']);
-eq('unknown next to known still splits', names('buy flux capacitor milk'), ['flux capacitor','milk']);
+/* Erich's settled principle: merging is the cheaper mistake. Words the
+   lexicon cannot place, in FRONT of something it can, describe it (gluten
+   free noodles) — so an unknown product typed straight before a known one
+   joins it. The cost, pinned: "flux capacitor milk" is one row (one tap to
+   fix); "milk flux capacitor" stays two, because a trailing unknown is its
+   own thing. */
+eq('unknown BEFORE known joins it (accepted cost)', names('flux capacitor milk'), ['flux capacitor milk']);
+eq('unknown AFTER known stays its own item', names('milk flux capacitor'), ['milk', 'flux capacitor']);
 
 /* --- the catalog must not teach the parser its own mistakes ---------------
    The household catalog is consulted BEFORE the built-in lexicon, because it
@@ -559,7 +566,7 @@ for (const [t, want] of FLAVOURED) eq(`flavour: ${t}`, pick(t), want);
 eq('flavour: qty rides along', P('2 gallons of orange juice').items.map(i => i.qty), ['2 gallons']);
 /* looksMerged must not reject the compounds the splitter now makes, or the
    catalog could never learn them. */
-import { isCompound } from './parse.js';
+import { isCompound, isQualifierOnly, coreOf, cleanName } from './parse.js';
 eq('compound: grape juice is one thing',       looksMerged('grape juice'), false);
 eq('compound: apple cider vinegar is one',     isCompound('apple cider vinegar'), true);
 eq('compound: milk eggs still comes apart',    looksMerged('milk eggs'), true);
@@ -571,6 +578,85 @@ eq('word end: lemons still are',          cats('lemons'),    ['produce']);
 eq('word end: butterscotch is not butter', cats('butterscotch'), ['baking']);
 eq('word end: buttermilk stays dairy',    cats('buttermilk'), ['dairy']);
 eq('word end: mangoes / cherries / peaches', [cats('mangoes'), cats('cherries'), cats('peaches')].flat(), ['produce', 'produce', 'produce']);
+
+/* ---------------------------------------------------------------------------
+ * A QUALIFIER IS NOT A THING  (Erich: "gluten free and noodles were
+ * separated, should be one item"). Two mechanisms, both rules now:
+ *   1. any run of unplaceable words before a known item joins it — not
+ *      just one word ("organic milk" worked, "gluten free milk" did not);
+ *   2. a qualifier containing a grocery word ("sugar free", "no sugar
+ *      added", "whole wheat") is named in QUALIFIERS and skipped at the
+ *      start of a chunk, so "sugar" cannot close the chunk and orphan
+ *      "free jello".
+ * ------------------------------------------------------------------------- */
+const QUAL = [
+  ['gluten free noodles',              ['gluten free noodles[pantry]']],
+  ['gluten-free noodles',              ['gluten-free noodles[pantry]']],
+  ['gluten free bread',                ['gluten free bread[bakery PICK]']],
+  ['fat free milk',                    ['fat free milk[dairy]']],
+  ['low sodium soup',                  ['low sodium soup[canned]']],
+  ['low fat yogurt',                   ['low fat yogurt[dairy]']],
+  ['reduced fat cheese',               ['reduced fat cheese[dairy]']],
+  ['dairy free ice cream',             ['dairy free ice cream[frozen]']],
+  ['whole wheat bread',                ['whole wheat bread[bakery PICK]']],
+  ['extra virgin olive oil',           ['extra virgin olive oil[pantry]']],
+  ['unsweetened almond milk',          ['unsweetened almond milk[dairy]']],
+  ['boneless skinless chicken breast', ['boneless skinless chicken breast[meat PICK]']],
+  ['free range eggs',                  ['free range eggs[eggs]']],
+  ['cage free eggs',                   ['cage free eggs[eggs]']],
+  ['grass fed beef',                   ['grass fed beef[meat PICK]']],
+  ['heavy whipping cream',             ['heavy whipping cream[dairy]']],
+  ['sharp cheddar cheese',             ['sharp cheddar cheese[dairy]']],
+  ['sugar free jello',                 ['sugar free jello[pantry]']],
+  ['no sugar added applesauce',        ['no sugar added applesauce[pantry]']],
+  ['organic milk',                     ['organic milk[dairy]']],
+  ['2% milk',                          ['2% milk[dairy]']],
+  ['2 lbs boneless skinless chicken thighs', ['boneless skinless chicken thighs[meat PICK]']],
+  ['milk, gluten free noodles, eggs',  ['milk[dairy]', 'gluten free noodles[pantry]', 'eggs[eggs]']],
+  ['gluten free noodles and fat free milk', ['gluten free noodles[pantry]', 'fat free milk[dairy]']],
+  ['organic gluten free pasta',        ['organic gluten free pasta[pantry]']],
+  /* must still split */
+  ['milk eggs bread',                  ['milk[dairy]', 'eggs[eggs]', 'bread[bakery PICK]']],
+  ['eggs bacon',                       ['eggs[eggs]', 'bacon[meat PICK]']],
+  ['tide charmin',                     ['tide[cleaning]', 'charmin[paper]']],
+  ['milk and toilet paper',            ['milk[dairy]', 'toilet paper[paper]']],
+  ['milk bike',                        ['milk[dairy]', 'bike[other]']],
+  /* the previous rounds, still one item */
+  ['butter sticks',                    ['butter sticks[dairy]']],
+  ['grape juice',                      ['grape juice[beverages]']],
+  ['onion rings',                      ['onion rings[frozen]']],
+  ['lemonade',                         ['lemonade[beverages]']],
+  ['toilet paper rolls',               ['toilet paper rolls[paper]']],
+  /* a qualifier on its own is not a thing */
+  ['sugar',                            ['sugar[pantry]']],
+];
+for (const [t, want] of QUAL) eq(`qualifier: ${t}`, pick(t), want);
+eq('qualifier: "gluten free" alone is other, never learned', [cats('gluten free'), isQualifierOnly('gluten free'), isQualifierOnly('milk')], [['other'], true, false]);
+eq('qualifier: qty rides along', P('a dozen large eggs').items.map(i => i.qty), ['a dozen']);
+eq('coreOf: strips brand and qualifiers for the ad key', ['h-e-b whole milk', 'kroger large grade a eggs', 'boneless skinless chicken breast', 'blue bell ice cream'].map(coreOf),
+   ['whole milk', 'eggs', 'chicken breast', 'blue bell ice cream']);
+
+/* ---------------------------------------------------------------------------
+ * A LONE BRACKET IS NOT A THING. "crescent rolls )" was saved to the live
+ * list with the bracket; ")" and "(shredded" were rows. An unmatched opening
+ * bracket is the same note as a matched one; stray punctuation comes off a
+ * name before it is saved or learned (cleanName).
+ * ------------------------------------------------------------------------- */
+const noted = s => P(s).items.map(i => `${i.name}${i.note ? '<' + i.note + '>' : ''}${i.qty ? '{' + i.qty + '}' : ''}`);
+eq('bracket: trailing stray bracket dropped',      noted('crescent rolls )'), ['crescent rolls']);
+eq('bracket: "bread )"',                           noted('bread )'), ['bread']);
+eq('bracket: unmatched open is a note',            noted('cheese (shredded'), ['cheese<shredded>']);
+eq('bracket: matched note still a note',           noted('milk (whole)'), ['milk<whole>']);
+eq('bracket: leading note',                        noted('(whole) milk'), ['milk<whole>']);
+eq('bracket: a note in the middle ends its item',  noted('milk (whole) eggs'), ['milk<whole>', 'eggs']);
+eq('bracket: spaced brackets',                     noted('eggs ( dozen )'), ['eggs<dozen>']);
+eq('bracket: lone bracket is nothing',             noted(')'), []);
+eq('bracket: punctuation run is nothing',          noted('( ) - .'), []);
+eq('bracket: stray bracket in a list',             noted('milk ), eggs'), ['milk', 'eggs']);
+eq('bracket: dashes off both ends',                [noted('- milk'), noted('milk -')].flat(), ['milk', 'milk']);
+eq('bracket: apostrophes inside survive',          noted("dave's killer bread"), ["dave's killer bread"]);
+eq('cleanName',  ['crescent rolls )', '  Milk  ', '(', '--', "dave's killer bread", 'cheese (shredded'].map(cleanName),
+   ['crescent rolls', 'milk', '', '', "dave's killer bread", 'cheese (shredded']);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
